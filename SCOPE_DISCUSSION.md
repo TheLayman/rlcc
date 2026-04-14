@@ -14,8 +14,6 @@ Each BRD requirement is mapped to one of:
 - **PLANNED** — In our roadmap, no external blockers
 - **NEEDS INPUT** — Blocked on WAISL / Nukkad / GHIAL
 - **CLARIFY** — KS comment needs correction or the requirement needs re-scoping
-- **REMOVED** — KS already declined, to be discussed in workshop
-
 **Important distinction:** The CV pipeline detects **3 signals** from video:
 1. Customer present (yes/no, with timestamps)
 2. Receipt printed (yes/no, with confidence)
@@ -53,17 +51,6 @@ Everything else (discount %, void, refund, item count, payment mode, cashier nam
 |--------|----------|
 | Blocker | **WAISL** — VMS API availability. If VMS provides an API to request video by camera + timestamp range, we can build retrieval. If not, EPOS data is shown without video snippet (as stated in KS comment for Req 8). |
 | Action | WAISL to confirm VMS API availability and share documentation. |
-
----
-
-## Req 3 & 4 — Text overlay on live video
-
-> Text overlay showing products, discounts, voids, prices on live video.
-
-| Status | **REMOVED by KS** |
-|--------|----------|
-| KS Position | To be removed. End users still want it — to be discussed in workshop. |
-| Technical note | Feasible if needed later — overlay EPOS data on MJPEG stream. Not in current scope. |
 
 ---
 
@@ -355,26 +342,12 @@ This is the largest section. Here is each sub-item mapped honestly:
 
 ---
 
-## Req 16 — Live text overlay
-
-| Status | **REMOVED by KS** — workshop discussion pending. |
-|--------|----------|
-
----
-
 ## Req 17 — Device offline alerts
 
 | Status | **NOT DONE** |
 |--------|----------|
 | Camera offline | Feasible — detect RTSP frame timeout. Phase 4. |
 | POS offline | Needs Nukkad to provide online/offline status. KS comment: "If data provided by Nukkad regarding POS online/offline, KS will trigger that too." |
-
----
-
-## Req 18 — Video clip cutting from recordings
-
-| Status | **REMOVED by KS** — workshop discussion pending. |
-|--------|----------|
 
 ---
 
@@ -449,13 +422,6 @@ This is the largest section. Here is each sub-item mapped honestly:
 
 ---
 
-## Req 28 — Joystick support
-
-| Status | **REMOVED by KS.** |
-|--------|----------|
-
----
-
 ## Req 29 — High / Medium / Low risk classification
 
 | Status | **DONE** |
@@ -464,20 +430,11 @@ This is the largest section. Here is each sub-item mapped honestly:
 
 ---
 
-## Req 30 — MIP Plugin timezone issue
-
-| Status | **REMOVED by KS.** |
-|--------|----------|
-
----
-
 ## Req 31 — Video analytics for revenue leakage
 
 | Sub-item | Status | Source | Notes |
 |----------|--------|--------|-------|
-| (a) Cash drawer open > X seconds | **REMOVED** by KS | — | |
 | (b) Staff opened drawer without customer | **NOT DONE** | EPOS only | Needs EPOS cash drawer event. KS correctly scoped this. |
-| (c) Staff pocketing money | **REMOVED** by KS | — | |
 | (d) Goods given, no bill from EPOS | **DONE** | CV + EPOS | CV detects session, no EPOS match = alert. |
 | (e) Void/cancel when customer not there | **FEASIBLE** | CV + EPOS | EPOS void + CV no customer. Not yet built as explicit rule. Phase 1. |
 
@@ -626,6 +583,4 @@ This is the largest section. Here is each sub-item mapped honestly:
 
 3. **Clean transaction retention: 1 week vs 1 month.** KS proposed 1 week, users want 1 month. Needs agreement — affects storage planning.
 
-4. **Several "removed by KS" items that users still want** (text overlay, video clips, joystick, cash drawer timing). These need final resolution in the workshop.
-
-5. **Manual entry detection** (items, discounts, prices) is entirely dependent on Nukkad adding flags to their API. Without those flags, we can only threshold-based detect (e.g., "discount > 20%") without knowing if it was manual.
+4. **Manual entry detection** (items, discounts, prices) is entirely dependent on Nukkad adding flags to their API. Without those flags, we can only threshold-based detect (e.g., "discount > 20%") without knowing if it was manual.
