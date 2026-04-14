@@ -579,8 +579,159 @@ This is the largest section. Here is each sub-item mapped honestly:
 
 1. **Payment mode detection from video is not possible.** Req 11i implies CV can detect cash vs card vs UPI — it cannot. Payment mode comes from EPOS only. The "mismatch" rule only works as an EPOS-side pattern check.
 
-2. **"With video snippets" appears in ~15 requirements.** All of these are blocked on VMS API. Without it, KS shows EPOS data and alert details without video. This is the single biggest scope item to resolve.
+2. **"With video snippets" appears in ~15 requirements.** We propose recording transaction snippets ourselves (CV pipeline saves frames during detected sessions) rather than depending on VMS API. This unblocks all snippet requirements immediately. VMS API becomes a fallback only for edge cases where EPOS has a transaction but CV didn't detect it.
 
 3. **Clean transaction retention: 1 week vs 1 month.** KS proposed 1 week, users want 1 month. Needs agreement — affects storage planning.
 
 4. **Manual entry detection** (items, discounts, prices) is entirely dependent on Nukkad adding flags to their API. Without those flags, we can only threshold-based detect (e.g., "discount > 20%") without knowing if it was manual.
+
+---
+
+# VLM-Enhanced Video Analytics — Proposed Capabilities
+
+## Context
+
+The current CV pipeline uses classical models (YOLOv8 for person detection, MediaPipe for hand tracking) running in real-time. These are fast and reliable but limited to spatial detection — they can tell *where* people and hands are, but not *what is happening*.
+
+Vision Language Models (VLMs) can analyze video frames and answer questions about the scene in natural language. They are slower (seconds per frame vs milliseconds for YOLO) and more expensive, but dramatically more capable for understanding context.
+
+**Architecture: Two-pass system**
+
+The key insight is that we don't need VLM in real-time. We use it as a **second pass on recorded transaction snippets**:
+
+1. **Real-time (existing):** YOLO + MediaPipe + FSM detects transactions, records 30-120 second video snippets
+2. **Near-real-time (new):** VLM analyzes recorded snippets for flagged transactions, enriches metadata
+3. **Scale:** Only ~100-200 transactions/day per camera need VLM analysis, not every frame
+
+This keeps the real-time pipeline fast while adding deep understanding on the recorded clips.
+
+## What VLM Unlocks
+
+### 1. Payment Mode Detection (currently impossible)
+
+**Req 11i — currently hardcoded `"N/A"` in CV output.**
+
+A VLM can analyze transaction frames and classify payment mode:
+- **Cash:** Customer hands over notes/coins, cashier opens drawer
+- **Card:** Customer taps/inserts card at EDC machine
+- **UPI:** Customer shows phone screen to scanner
+
+This would make the payment mode mismatch rule (Req 11i) actually work by providing a video-side payment mode to compare against EPOS data.
+
+*Accuracy expectation: ~70-85% depending on camera angle and occlusion. Not perfect, but turns a dead rule into a useful signal.*
+
+### 2. Receipt Handover Verification (improves existing)
+
+**Currently: 3-tier detection (motion → hand → background change) — medium confidence.**
+
+VLM can confirm: "Was a printed receipt handed to the customer?" This is a qualitative judgment that spatial detection can't make. Upgrades receipt detection from "hand was near printer" to "receipt was produced and given."
+
+*Directly improves: Req 11m, 11n, 11o, 13g.*
+
+### 3. Goods Exchange Verification
+
+**Currently: Not possible.**
+
+VLM can describe: "Customer placed items on counter. Cashier scanned items. Items were bagged and handed over." — or flag when this didn't happen.
+
+This enables detection of:
+- **Sweethearting** — cashier doesn't scan items for an acquaintance
+- **Pass-around** — goods leave without going through POS
+- **Bag stuffing** — more items leave than were scanned
+
+*Relevant to: Req 11m ("goods exchanged but no bill"), general revenue leakage detection.*
+
+### 4. Suspicious Behavior Narrative
+
+**Currently: Binary flags only (yes/no for each rule).**
+
+VLM can produce a short natural language description of each flagged transaction:
+
+> "Customer placed 3 items on counter. Cashier scanned 2 items. One item was placed directly into bag without scanning. Receipt was printed. Customer paid with cash."
+
+This gives the RLCC monitoring team context instead of just "Triggered: Bill Not Generated." It transforms the alert from a flag into a story.
+
+*Relevant to: Req 36 (single screen for investigating alerts), Req 22 (resolving alerts with evidence).*
+
+### 5. Cash Drawer Monitoring
+
+**Req 11h, 31b — currently "not possible without EPOS event."**
+
+VLM can potentially detect: "Cashier opened cash drawer without a customer present" or "Cash drawer was opened during a void transaction." This removes the dependency on Nukkad for cash drawer events, at least for visual detection.
+
+*Accuracy caveat: Depends heavily on camera angle and visibility of the drawer. Works best with counter-level cameras, less reliable from overhead.*
+
+### 6. Customer Presence for Edge Cases
+
+**Req 12(ii)b — return without customer presence.**
+
+VLM can confirm: "A refund was processed at POS but no customer was at the counter during this time." More reliable than YOLO-only presence detection for edge cases (e.g., customer standing just outside the zone).
+
+### 7. Post-Shift Anomaly Reports
+
+VLM can review all transaction snippets from a shift and generate a summary:
+
+> "Shift summary (POS 3, 9:00-17:00): 47 transactions. 3 flagged. Observations: cashier frequently stepped away from POS between 14:00-15:00. Two transactions had items not scanned. Receipt handover was inconsistent — 8 transactions had receipt left on counter rather than handed to customer."
+
+*Relevant to: Req 5 (employee reports), Req 35 (trend analysis), Req 37 (summary reports).*
+
+## Deployment Architecture: Edge CV + Centralized VLM
+
+```
+ STORE (Edge Device)                         CENTRAL SERVER
+ Nvidia Jetson Orin / Thor                   GPU Server / Cloud
+ ┌────────────────────────┐                  ┌──────────────────────────┐
+ │  YOLO + MediaPipe      │                  │  VLM (LLaVA / CogVLM /  │
+ │  Real-time CV pipeline │                  │  Claude Vision API)      │
+ │  - Person detection    │                  │                          │
+ │  - Hand tracking       │   snippets +     │  - Payment mode ID       │
+ │  - Receipt detection   │──  metadata  ──> │  - Scene narration       │
+ │  - Transaction FSM     │   (on flag or    │  - Behavior analysis     │
+ │  - Snippet recording   │    all txns)     │  - Anomaly descriptions  │
+ │                        │                  │  - Shift summaries       │
+ │  ~15W (Orin Nano)      │                  │                          │
+ │  ~60W (Orin)           │  <── enriched ── │  Returns: enriched       │
+ │  Per store, per camera │      metadata    │  transaction metadata    │
+ └────────────────────────┘                  └──────────────────────────┘
+```
+
+**Why this split makes sense:**
+
+| Concern | Edge (Jetson) | Central (VLM Server) |
+|---------|--------------|---------------------|
+| **Latency** | Real-time (<100ms/frame) | Near-real-time (5-15s/transaction) |
+| **Cost per store** | ~$200-500 one-time (Orin Nano/Orin) | Shared across all stores |
+| **Bandwidth** | Processes locally, sends only snippets | Receives only flagged clips, not full streams |
+| **Scale** | 1 device per camera / per store | 1 server handles all stores |
+| **Privacy** | Video stays on-premise, only snippets leave | Can be on-premise too if required |
+| **Failure mode** | Edge works standalone if central is down | Enrichment delayed, not lost |
+
+**Edge device handles:** Person detection, hand tracking, receipt detection, transaction state machine, snippet recording, session metadata. This is exactly what the current pipeline does — it already runs on a single GPU, Jetson Orin is more than capable.
+
+**Central VLM handles:** Payment mode classification, scene narration, behavioral analysis, shift summaries. Processes only recorded snippets (~100-200 per store per day), not live streams. One server can serve 50+ stores.
+
+**Bandwidth per store:** ~200 transactions/day x ~3MB clip = ~600MB/day uploaded. Trivial over any commercial connection.
+
+## Implementation Approach
+
+| Aspect | Detail |
+|--------|--------|
+| **When to run** | After transaction snippet is recorded on edge, uploaded to central. ~5-15 second delay per transaction. |
+| **What to analyze** | Sample 3-5 key frames from the snippet (start, middle, end of transaction) + 1-2 frames around receipt detection time. |
+| **Where to run** | Edge: Jetson Orin (YOLO + MediaPipe). Central: dedicated GPU server or cloud API for VLM. Central can be on-premise if data sovereignty requires it. |
+| **Fallback** | If central VLM is unavailable, edge detection still works standalone. VLM enriches but doesn't replace the real-time pipeline. All basic fraud rules, receipt detection, and alerting continue without VLM. |
+
+## Requirements Affected
+
+| Requirement | Current | With VLM |
+|-------------|---------|----------|
+| 11i — Payment mode from video | Not possible (`"N/A"`) | ~70-85% accuracy on cash/card/UPI |
+| 11h — Cash drawer without transaction | Needs EPOS event | Visual detection (camera angle dependent) |
+| 11m/n/o — No bill generated | Binary flag | Contextual confirmation with narrative |
+| 12(ii)b — Return without customer | Zone-based presence only | Scene understanding ("no customer visible") |
+| 31e — Void when customer not there | Feasible but not built | VLM confirms with visual evidence |
+| 5 — Employee reports | Transaction counts only | Behavioral observations per cashier |
+| 35 — Trend analysis | Not built | Shift-level behavioral summaries |
+| 36 — Alert investigation | Flag + data | Flag + data + scene narrative |
+| Sweethearting detection | Not in requirements | New capability — items not scanned |
+| Pass-around detection | Not in requirements | New capability — goods leave without POS |
