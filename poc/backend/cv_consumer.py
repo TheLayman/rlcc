@@ -19,18 +19,24 @@ class CVConsumer:
         self.redis = aioredis.from_url(self.redis_url)
 
     async def run(self):
-        if not self.redis:
-            await self.connect()
-        pubsub = self.redis.pubsub()
-        await pubsub.psubscribe("cv:*")
-        async for message in pubsub.listen():
-            if message["type"] != "pmessage":
-                continue
+        while True:
             try:
-                signal = json.loads(message["data"])
-                self._process_signal(signal)
-            except (json.JSONDecodeError, KeyError):
-                continue
+                if not self.redis:
+                    await self.connect()
+                pubsub = self.redis.pubsub()
+                await pubsub.psubscribe("cv:*")
+                async for message in pubsub.listen():
+                    if message["type"] != "pmessage":
+                        continue
+                    try:
+                        signal = json.loads(message["data"])
+                        self._process_signal(signal)
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+            except Exception as e:
+                print(f"[cv_consumer] Redis error: {e}, reconnecting in 5s...")
+                self.redis = None
+                await asyncio.sleep(5)
 
     def _process_signal(self, signal: dict):
         camera_id = signal.get("camera_id", "")

@@ -17,7 +17,7 @@ class ConnectionManager:
     async def broadcast(self, message_type: str, data: dict):
         msg = json.dumps({"type": message_type, "data": data}, default=str)
         disconnected = []
-        for ws in self.connections:
+        for ws in list(self.connections):
             try:
                 await ws.send_text(msg)
             except Exception:

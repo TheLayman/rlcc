@@ -13,9 +13,7 @@ class Storage:
         self._seen: set[str] = set()
 
     def _lock_for(self, name: str) -> threading.Lock:
-        if name not in self._locks:
-            self._locks[name] = threading.Lock()
-        return self._locks[name]
+        return self._locks.setdefault(name, threading.Lock())
 
     def _filepath(self, name: str) -> Path:
         return self.data_dir / f"{name}.jsonl"
@@ -35,7 +33,10 @@ class Storage:
                 for line in f:
                     line = line.strip()
                     if line:
-                        records.append(json.loads(line))
+                        try:
+                            records.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue  # skip corrupt lines
             return records
 
     def update(self, name: str, record_id: str, updates: dict):
@@ -48,7 +49,10 @@ class Storage:
                 for line in f:
                     line = line.strip()
                     if line:
-                        records.append(json.loads(line))
+                        try:
+                            records.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue  # skip corrupt lines
             for r in records:
                 if r.get("id") == record_id:
                     r.update(updates)
@@ -70,8 +74,17 @@ class Storage:
         path = self.data_dir / "events" / f"{date}.jsonl"
         if not path.exists():
             return []
-        with open(path) as f:
-            return [json.loads(line.strip()) for line in f if line.strip()]
+        with self._lock_for("events"):
+            records = []
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            records.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue  # skip corrupt lines
+            return records
 
     def _dedup_key(self, event: dict) -> str:
         return f"{event.get('transactionSessionId', '')}:{event.get('event', '')}:{event.get('lineNumber', '')}"

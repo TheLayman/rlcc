@@ -13,44 +13,48 @@ from backend.fraud import FraudEngine
 from backend.ws import ConnectionManager
 from backend.cv_consumer import CVConsumer
 from backend.correlator import correlate
+from backend.models import Alert
+import backend.deps as deps
 
 POC_DIR = Path(__file__).parent.parent
 CONFIG_DIR = POC_DIR / "config"
 DATA_DIR = POC_DIR / "data"
 
-# Globals — shared across the app
-config = Config(config_dir=str(CONFIG_DIR))
-storage = Storage(data_dir=str(DATA_DIR))
-assembler = TransactionAssembler()
-fraud_engine = FraudEngine(config.rules)
-ws_manager = ConnectionManager()
-cv_consumer = CVConsumer()
+# Globals — shared across the app (via deps module)
+deps.config = Config(config_dir=str(CONFIG_DIR))
+deps.storage = Storage(data_dir=str(DATA_DIR))
+deps.assembler = TransactionAssembler()
+deps.fraud_engine = FraudEngine(deps.config.rules)
+deps.ws_manager = ConnectionManager()
+deps.cv_consumer = CVConsumer()
 
 
 async def config_watcher():
     while True:
         await asyncio.sleep(10)
-        if config.has_changed():
-            config.reload()
-            fraud_engine.__init__(config.rules)
+        if deps.config.has_changed():
+            deps.config.reload()
+            deps.fraud_engine.__init__(deps.config.rules)
 
 
 async def expiry_checker():
     while True:
         await asyncio.sleep(60)
-        expired = assembler.check_expired()
+        expired = deps.assembler.check_expired()
         for txn in expired:
             txn.risk_level = "Medium"
             txn.triggered_rules = ["abandoned_transaction"]
-            storage.append("transactions", txn.model_dump())
-            alert_data = {
-                "id": txn.id,
-                "store_id": txn.store_id,
-                "risk_level": "Medium",
-                "triggered_rules": ["abandoned_transaction"],
-            }
-            storage.append("alerts", alert_data)
-            await ws_manager.broadcast("NEW_ALERT", alert_data)
+            deps.storage.append("transactions", txn.model_dump())
+            alert = Alert(
+                transaction_id=txn.id,
+                store_id=txn.store_id,
+                pos_zone=txn.pos_terminal,
+                cashier_id=txn.cashier_id,
+                risk_level="Medium",
+                triggered_rules=["abandoned_transaction"],
+            )
+            deps.storage.append("alerts", alert.model_dump())
+            await deps.ws_manager.broadcast("NEW_ALERT", alert.model_dump())
 
 
 @asynccontextmanager
@@ -63,7 +67,7 @@ async def lifespan(app: FastAPI):
     tasks = [
         asyncio.create_task(config_watcher()),
         asyncio.create_task(expiry_checker()),
-        asyncio.create_task(cv_consumer.run()),
+        asyncio.create_task(deps.cv_consumer.run()),
     ]
     yield
     for t in tasks:
@@ -88,24 +92,24 @@ app.include_router(camera_router)
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await ws_manager.connect(websocket)
+    await deps.ws_manager.connect(websocket)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        ws_manager.disconnect(websocket)
+        deps.ws_manager.disconnect(websocket)
 
 
 @app.get("/api/transactions")
 async def list_transactions():
-    txns = storage.read("transactions")
+    txns = deps.storage.read("transactions")
     txns.reverse()  # newest first
     return txns
 
 
 @app.get("/api/transactions/{txn_id}")
 async def get_transaction(txn_id: str):
-    for txn in storage.read("transactions"):
+    for txn in deps.storage.read("transactions"):
         if txn.get("id") == txn_id:
             return txn
     return {"error": "not found"}
@@ -116,7 +120,7 @@ from backend.models import TransactionSession as TxnModel
 
 @app.get("/api/transactions/{txn_id}/timeline")
 async def get_timeline(txn_id: str):
-    for txn_data in storage.read("transactions"):
+    for txn_data in deps.storage.read("transactions"):
         if txn_data.get("id") == txn_id:
             txn = TxnModel(**txn_data)
             return build_timeline(txn)
@@ -125,34 +129,34 @@ async def get_timeline(txn_id: str):
 
 @app.get("/api/alerts")
 async def list_alerts():
-    alerts = storage.read("alerts")
+    alerts = deps.storage.read("alerts")
     alerts.reverse()
     return alerts
 
 
 @app.post("/api/alerts/{alert_id}/resolve")
 async def resolve_alert(alert_id: str, status: str, remarks: str = ""):
-    storage.update("alerts", alert_id, {"status": status, "remarks": remarks})
-    await ws_manager.broadcast("ALERT_UPDATED", {"id": alert_id, "status": status})
+    deps.storage.update("alerts", alert_id, {"status": status, "remarks": remarks})
+    await deps.ws_manager.broadcast("ALERT_UPDATED", {"id": alert_id, "status": status})
     return {"ok": True}
 
 
 @app.get("/api/config")
 async def get_config():
-    return config.rules
+    return deps.config.rules
 
 
 @app.post("/api/config")
 async def update_config(new_config: dict):
-    config.rules.update(new_config)
-    config.save_rules()
-    fraud_engine.__init__(config.rules)
+    deps.config.rules.update(new_config)
+    deps.config.save_rules()
+    deps.fraud_engine.__init__(deps.config.rules)
     return {"ok": True}
 
 
 @app.get("/api/stores")
 async def list_stores():
-    return [{"cin": s.cin, "name": s.name, "pos_system": s.pos_system} for s in config.stores]
+    return [{"cin": s.cin, "name": s.name, "pos_system": s.pos_system} for s in deps.config.stores]
 
 
 @app.get("/api/cameras")
@@ -167,7 +171,7 @@ async def list_cameras():
             "multi_pos": c.multi_pos,
             "zones": {"pos_zones": [{"zone_id": z.zone_id, "seller_zone": z.seller_zone, "bill_zone": z.bill_zone} for z in c.pos_zones]},
         }
-        for c in config.cameras
+        for c in deps.config.cameras
     ]
 
 

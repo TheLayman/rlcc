@@ -46,15 +46,23 @@ class Config:
     def _load_stores(self):
         path = self.config_dir / "stores.json"
         if path.exists():
-            with open(path) as f:
-                data = json.load(f)
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"[config] Error loading {path}: {e}")
+                return
             self.stores = [StoreEntry(cin=s["cin"], name=s["name"], pos_system=s["pos_system"]) for s in data]
 
     def _load_cameras(self):
         path = self.config_dir / "camera_mapping.json"
         if path.exists():
-            with open(path) as f:
-                data = json.load(f)
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"[config] Error loading {path}: {e}")
+                return
             self.cameras = []
             for c in data:
                 zones = [
@@ -79,8 +87,12 @@ class Config:
     def _load_rules(self):
         path = self.config_dir / "rule_config.json"
         if path.exists():
-            with open(path) as f:
-                self.rules = json.load(f)
+            try:
+                with open(path) as f:
+                    self.rules = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"[config] Error loading {path}: {e}")
+                return
 
     def save_stores(self):
         path = self.config_dir / "stores.json"
