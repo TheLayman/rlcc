@@ -111,6 +111,18 @@ async def get_transaction(txn_id: str):
     return {"error": "not found"}
 
 
+from backend.timeline import build_timeline
+from backend.models import TransactionSession as TxnModel
+
+@app.get("/api/transactions/{txn_id}/timeline")
+async def get_timeline(txn_id: str):
+    for txn_data in storage.read("transactions"):
+        if txn_data.get("id") == txn_id:
+            txn = TxnModel(**txn_data)
+            return build_timeline(txn)
+    return []
+
+
 @app.get("/api/alerts")
 async def list_alerts():
     alerts = storage.read("alerts")
