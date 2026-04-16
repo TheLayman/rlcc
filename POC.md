@@ -235,39 +235,97 @@ Machine is at ~1% GPU, ~20% RAM. 90 days of snippets + data = ~30 GB. Trivial.
 
 **Resolved:** "Stringified" JSON format — confirmed stringified. Receiver parses outer string, then JSON-decodes the inner payload.
 
+## Status
+
+### Done
+
+| Component | Status | Tests | Details |
+|-----------|--------|-------|---------|
+| Project scaffold | Done | — | `poc/` with backend, emulator, tests, config, data dirs |
+| Pydantic models | Done | 5 pass | TransactionSession, SaleLine, PaymentLine, TotalLine, Alert, CVWindow, TimelineEvent |
+| JSONL storage | Done | 4 pass | Append, read, update, WAL (daily rotation), in-memory dedup |
+| Config loader | Done | — | Stores, cameras, rules. Hot reload on file change. Save methods. |
+| Transaction assembler | Done | 7 pass | OPEN → COMMITTED → EXPIRED. Out-of-order event buffering. 30-min timeout with abandoned alerts. |
+| Fraud engine | Done | 9 pass | 29 rules, risk escalation matrix (3 MEDIUM → HIGH), feed-down suppression (10 min silence → suppress CV alerts) |
+| FastAPI app | Done | — | Lifespan, WebSocket, CORS, config watcher (10s), expiry checker (60s), REST API, static dashboard mount |
+| Push event receiver | Done | 4 pass | Stringified JSON parsing. WAL + dedup. Routes to assembler. Fraud eval + broadcast on commit. BillReprint alerts. |
+| Nukkad emulator | Done | — | 9 fraud scenarios: manual entry, manual discount, high discount, void, return not recent, null txn, drawer opened, reprint, employee purchase |
+| CV signal consumer | Done | — | Redis pub/sub subscriber. 30s fixed window aggregation per POS zone. 14-day window retention. |
+| Correlator | Done | 3 pass | Match committed txns to CV windows by SellerWindowId + timestamp (±3s). Sets cv_non_seller_present, cv_receipt_detected, cv_confidence. |
+| Event timeline | Done | — | Merge POS + CV events into sorted list per transaction. `/api/transactions/{id}/timeline` endpoint. |
+| CV emulator | Done | — | Publishes fake signals to Redis for 5 cameras at configurable FPS. |
+
+**Total: 32 tests passing. Backend fully functional on emulated data.**
+
+### How to run (emulator mode)
+
+```bash
+cd poc
+redis-server --daemonize yes --dir ./data
+python3 -m backend.main &                          # backend on :8001
+python3 -m emulator.cv_emulator --fps 2 &          # fake CV signals
+python3 -m emulator.nukkad_emulator --interval 3   # fake POS events
+```
+
+Check: `curl http://localhost:8001/api/transactions | python3 -m json.tool`
+
+### Pending (external)
+
+| Item | From | Status |
+|------|------|--------|
+| Nukkad push endpoint → our box | Nukkad + WAISL (firewall) | FAR submitted, waiting approval |
+| Network path for Nukkad inbound | WAISL | Need: NAT/reverse proxy or outbound tunnel |
+
+### Next steps
+
+**1. CV Service** (replaces cv_emulator with real cameras)
+- Multi-threaded RTSP grabber (1 thread per camera)
+- Shared YOLO model (CPU on Mac, CUDA on T4)
+- Zone classification (seller zone polygon checks)
+- Bill zone motion + background change detection
+- 15-min ffmpeg rolling buffer per camera
+- Redis signal publisher (same format as cv_emulator)
+- Hot reload: watches camera_mapping.json, adds/removes cameras without restart
+
+**2. Camera API** (backend endpoints for store management)
+- `POST /api/stores` — add/update store
+- `POST /api/cameras` — add/update camera with RTSP URL
+- `GET /api/cameras/{id}/frame` — grab one RTSP frame as JPEG
+- `POST /api/cameras/{id}/zones` — save zone polygons
+- Snippet extraction: `GET /api/transactions/{id}/video` — extract MP4 from rolling buffer
+
+**3. Dashboard** (React app, 7 pages)
+- Transactions: list + filters + detail drawer with per-item/per-payment breakdown
+- Alerts: list + resolve workflow (status + remarks)
+- Analytics: risk distribution, txns over time, rule violations, hourly activity
+- Scorecard: per-store and per-employee metrics
+- Settings: per-rule enable/disable toggles + threshold sliders
+- Store Setup: add store, add camera, draw zone polygons on live camera frame
+- Stream Viewer: raw CV + POS events (debug)
+- Video player: `<video>` tag with event timeline sync (click event → seek video)
+
+**4. Reconciler** (hourly sales API poll)
+- Poll Nukkad sales API (F&B + Retail endpoints)
+- Compare against push-assembled transactions by billNumber
+- Backfill gaps
+- Not urgent until Nukkad push is live
+
 ## Build plan
 
-### Week 1: CV service + push receiver + assembler
+### Completed
 
-| Day | Deliverable |
-|-----|------------|
-| 1-2 | CV service: multi-threaded RTSP grabber + shared YOLO + zone classification + Redis publisher. Test with 1 real RTSP stream. |
-| 3-4 | Nukkad push receiver: `POST /v1/rlcc/launch-event`, event routing, transaction assembler (OPEN/COMMITTED/EXPIRED), raw event WAL. Test with emulated Nukkad events. |
-| 5 | Nukkad event emulator: generates realistic push event sequences for testing without live Nukkad connection. |
+| Week | What | Status |
+|------|------|--------|
+| Week 1 (Days 3-5) + Week 2 | Backend core + emulators | **Done** — 12 components, 32 tests |
 
-### Week 2: Correlation + fraud engine + timeline
+### Remaining
 
-| Day | Deliverable |
-|-----|------------|
-| 1-2 | CV signal consumer (Redis sub → 30s window aggregation). Correlation engine (match committed txns to CV windows). |
-| 3-4 | Fraud engine: all 29 rules with risk scoring matrix. Feed-down suppression. Per-rule enable/disable config. |
-| 5 | Event timeline builder: merge POS + CV events per transaction. Sales API reconciliation job (hourly). |
-
-### Week 3: Dashboard + integration testing
-
-| Day | Deliverable |
-|-----|------------|
-| 1-2 | Dashboard: new filters, per-item/per-payment detail, event timeline panel, rule toggles. |
-| 3 | Connect real Nukkad push (staging endpoint pointed at our box). |
-| 4-5 | End-to-end testing with 5 live stores: real RTSP + real Nukkad push + correlation + fraud rules + dashboard. |
-
-### Week 4: Tuning + demo
-
-| Day | Deliverable |
-|-----|------------|
-| 1-2 | Zone polygon tuning for each store (adjust based on real camera angles). Fraud rule threshold tuning. |
-| 3 | Correlation timing validation: check CV window alignment with Nukkad timestamps. Fix clock skew if needed. |
-| 4-5 | Demo prep. Run for 2-3 days collecting real data before demo. |
+| Week | What | Blocked by |
+|------|------|-----------|
+| Week 2 remaining | CV service (YOLO + zones + buffer) + Camera API | Nothing — can start now |
+| Week 3 | Dashboard (7 pages) | Nothing — can start now |
+| Week 3-4 | Connect real Nukkad push + real RTSP | Firewall approval |
+| Week 4 | Tuning + demo | Real data flowing |
 
 ## POC → Production migration
 
