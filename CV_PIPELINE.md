@@ -11,7 +11,9 @@ It does not assemble transactions, run fraud rules, or make decisions. The app s
 | Chip | Task | Duty cycle |
 |------|------|-----------|
 | Axelera Metis AIPU | YOLO person detection (INT8) | Always — all cameras, 5-6 FPS each, 600 FPS aggregate |
-| iGPU Arc 140T | H.265 decode (40 streams) + Phase 2 crop classifiers | Always (decode) + on-demand (classifiers) |
+| iGPU Arc 140T | H.265 decode (up to 40 streams*) + Phase 2 crop classifiers | Always (decode) + on-demand (classifiers) |
+
+*\*Hardware validation needed:* 40 concurrent H.265 decode sessions on Arc 140T is unvalidated. Intel iGPUs typically support 16-32 concurrent sessions. At 5-6 FPS (not 30), the decode throughput is fine (240 frames/sec), but the concurrent session limit is the constraint. Fallback if limited to ~20 sessions: 20 cameras per device (13 devices for 250 cameras) or CPU-assisted decode for overflow streams.
 | CPU 6P+8E | Zone logic, tracking, signal assembly, MQTT/HTTP | Always |
 
 ## Phase 1: Zone Presence Signals
@@ -199,6 +201,12 @@ No `customer_zone` on multi-POS cameras — customers don't stand in predictable
 The POC already has an interactive zone drawing tool (web UI at `/` on the vas_server). This carries over to production — operator opens the tool, draws polygons on a camera frame, saves config.
 
 ## Edge → Server Protocol
+
+### Transport resilience
+
+MQTT QoS 1 over TLS. If the broker is unreachable, the edge device buffers signals in a local ring buffer (last 5 minutes per camera, ~50 MB total for 40 cameras). On reconnect, buffered signals are replayed in order. Signals older than 5 minutes are dropped — stale presence data is worse than missing data.
+
+Mosquitto persistent sessions help with brief disconnects (<1 second), but the per-client queue limit (default 100 messages) fills in <1 second at 240 msg/sec. The edge-side ring buffer is the real safety net.
 
 ### Signal stream (MQTT, high frequency)
 

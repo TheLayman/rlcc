@@ -83,11 +83,11 @@ All requirements in BRD order. Every item accounted for.
 | Req | Requirement | Status | Pri | Approach | Acceptance Criteria |
 |-----|-------------|--------|-----|----------|-------------------|
 | 1 | POS terminal mapped to camera stream | DONE | P0 | `mapping.json` + Nukkad `GetTill` API for dynamic resolution | Given a POS terminal ID, system resolves the correct camera stream(s) |
-| 2 | Transaction mapped to CCTV footage + suspicious flagging | BUILDABLE | P0 | XProtect WebRTC playback by timestamp. Missing POS alert when CV detects transaction with no EPOS match. Auto-tag when delayed EPOS arrives. | Clicking any transaction opens synchronized video. Missing POS alert fires within 30s. |
+| 2 | Transaction mapped to CCTV footage + suspicious flagging | BUILDABLE | P0 | XProtect WebRTC playback by timestamp. Missing POS alert when CV detects transaction with no EPOS match. Auto-tag when delayed EPOS arrives. | Clicking any transaction opens synchronized video. Missing POS alert fires after 30s of sustained seller + non-seller co-presence with no Nukkad event. |
 | 3, 4, 16 | POS text overlay on live/recorded video | BUILDABLE | P1 | Event overlay player: POS events (items, discounts, voids, prices) displayed alongside synchronized video playback. Functionally equivalent to text overlay but cleaner — events in a timeline panel synced to video, not burned into frames. | Investigator sees POS data synchronized with video during playback. Events highlight as video reaches their timestamp. |
 | 5 | Employee-specific transaction reports | BUILDABLE | P1 | Nukkad push API provides `cashierID`, `employeePurchase` flag, `OperatorSignOn`/`Off` for shift boundaries. | Reports show per-employee: transaction count, void rate, discount rate, manual entry count, alerts triggered. Filterable by date range and shift. |
 | 6 | Filter transactions by type | BUILDABLE | P1 | Per-violation-type filters from Nukkad enums. | Dashboard filters: Void, Return, Manual Entry, Manual Discount, Employee Purchase, Drawer Opened, Reprint. Filters combinable. |
-| 7 | Deterministic triggers for fraud events + notification workflow | DONE | P0 | 9 existing rules + 16 new rules. Real-time push means alerts fire within seconds. | Alert appears in dashboard within 5 seconds of triggering event. |
+| 7 | Deterministic triggers for fraud events + notification workflow | DONE | P0 | 9 existing rules + 16 new rules. Real-time push means alerts fire within seconds. | EPOS-only alerts appear in dashboard within 5 seconds of CommitTransaction. Cross-validation alerts appear within 5 seconds of correlation completion. CV-initiated alerts appear after the configured dwell threshold (default 30s). |
 | 8 | Recording retention (clean 1 week, suspicious 3 months) | BUILDABLE | P1 | Hybrid: XProtect for recent playback, self-stored snippets for flagged transactions. GHIAL to confirm clean retention period (1 week vs 1 month). | Clean transactions auto-purged after confirmed period. Flagged transaction video retained 3 months. |
 | 9 | High availability / failover | NOT IN SCOPE | P3 | Phase 5 production infrastructure. | N/A for current phases. |
 | 10 | 24x7 live monitoring with 30-day snippet retention | BUILDABLE | P1 | CV pipeline runs 24x7. XProtect WebRTC for live streaming. 30-day retention configurable in XProtect. | Live view available for any camera. Recorded footage retrievable for any timestamp within 30 days. |
@@ -103,7 +103,7 @@ All requirements in BRD order. Every item accounted for.
 | 11j | Item scanning not reflecting on screen | NOT IN SCOPE | — | Failed scans produce no EPOS event — indistinguishable from "item not scanned." | N/A. |
 | 11k | Mis-punching of item | DONE | P0 | Per BRD: "mis-punch considered as Void." Covered by `itemAttribute: CancellationWithinTransaction`. | Same as 11b. |
 | 11l | Return/Refund | DONE/ENHANCED | P0 | Per-item: `ReturnItem`, `ReturnNotRecentlySold`, `ExchangeSlipWithoutMatchingLine`. Payment: `ReturnCash`. | Each return subtype generates a specific alert. |
-| 11m | EPOS not utilized (goods exchanged, no bill) | DONE | P0 | CV detects customer session, no POS event = Missing POS alert. Timeout reduced to ~30s with push API. | Missing POS alert fires within 30s. |
+| 11m | EPOS not utilized (goods exchanged, no bill) | DONE | P0 | CV detects customer session, no POS event = Missing POS alert. Timeout reduced to ~30s with push API. | Missing POS alert fires after 30s of sustained seller + non-seller co-presence with no Nukkad event. |
 | 11n | No printout from printer | DONE | P0 | CV bill zone detection. | Alert fires when transaction completes but no bill detected. |
 | 11o | Render cash but no bill | DONE | P0 | Combination of 11m + 11n. | Alert fires on cash exchange with no bill and no EPOS record. |
 | 11p | Reprinting / duplicate bill | BUILDABLE | P0 | `BillReprint` event from Nukkad. | Alert fires on every reprint. Reprint count tracked per cashier. |
@@ -155,7 +155,7 @@ All requirements in BRD order. Every item accounted for.
 | 31(a) | Cash drawer open > X seconds | PARTIAL | P2 | `DrawerOpenedOutsideATransaction` detects open. Duration tracking needs drawer-close event (not yet available from Nukkad). | Alert on drawer open. Duration deferred. |
 | 31(b) | Drawer open without customer | BUILDABLE | P1 | CV customer detection + `DrawerOpenedOutsideATransaction`. | Alert when drawer opens with no customer in zone. |
 | 31(c) | Staff taking money to pocket | NOT IN SCOPE | — | Requires pose estimation / VLM. | N/A. |
-| 31(d) | Goods given, no bill | DONE | P0 | CV customer session + no EPOS match. | Missing POS alert fires within 30s. |
+| 31(d) | Goods given, no bill | DONE | P0 | CV customer session + no EPOS match. | Missing POS alert fires after 30s of sustained seller + non-seller co-presence with no Nukkad event. |
 | 31(e) | Void when customer not present | BUILDABLE | P1 | CV customer detection + void event. | Alert when void occurs with no customer detected. |
 | 32 | EPOS downtime report | BUILDABLE | P2 | `OperatorSignOn`/`Off` + event absence inference. | POS uptime/downtime per terminal per day. |
 | 33 | Camera view blocked alert | NOT DONE | P3 | Phase 4. Reference frame comparison. | N/A for current phases. |
@@ -191,8 +191,11 @@ Build the complete system against emulated data sources.
 |-------------|--------|
 | Receiver API | HTTP endpoint accepting Nukkad push events |
 | Transaction assembler | Accumulates events per `transactionSessionId` until `CommitTransaction` |
-| Data models | Per-item (`AddTransactionSaleLine`), per-payment (`AddTransactionPaymentLine`), session metadata |
+| Data models | Per-item (`AddTransactionSaleLine`), per-payment (`AddTransactionPaymentLine`), session metadata with `source` field (push/poll/arms) |
 | Event persistence | Store raw events for replay and debugging |
+| Camera mapping | Three-way mapping (SellerWindowId ↔ camera_id ↔ XProtect deviceId) with startup + periodic validation |
+| Basic auth | HTTP Basic over TLS on all dashboard endpoints. MQTT per-device credentials. Nukkad IP allowlist. Prerequisite for non-emulator deployment. |
+| Feed-down suppression | Auto-suppress CV-initiated alerts when Nukkad feed is down (>10 min silence). Raise ops alert instead. |
 
 ### Phase 1B — Expanded Fraud Engine (1-2 weeks)
 

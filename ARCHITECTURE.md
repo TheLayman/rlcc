@@ -56,6 +56,55 @@ Nukkad pushes POS events (BeginTransactionWithTillLookup → SaleLines → Payme
 
 Dashboard connects to app server for data and to XProtect API Gateway for video (separate connections).
 
+## Mapping Management
+
+The system requires a three-way mapping between POS terminals, CV cameras, and XProtect devices:
+
+```
+SellerWindowId (e.g., "NDCIN1223_POS3")
+    ↕
+camera_id (e.g., "cam-03") — used by edge CV pipeline
+    ↕
+device_id (e.g., "a1b2c3d4-...") — XProtect GUID for video playback
+```
+
+All three are needed: SellerWindowId for POS-to-CV correlation, camera_id for CV signal routing, device_id for video playback in the dashboard.
+
+### Mapping file: `camera_mapping.json`
+
+```json
+[
+  {
+    "seller_window_id": "NDCIN1223_POS3",
+    "store_id": "NDCIN1223",
+    "pos_terminal": "POS 3",
+    "camera_id": "cam-03",
+    "xprotect_device_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "multi_pos": true,
+    "zone_config": "zones/cam-03.json"
+  }
+]
+```
+
+Replaces the current `mapping.json` (which only maps SellerWindowId to camera).
+
+### Validation
+
+On app server startup and every 15 minutes:
+1. Every entry in `camera_mapping.json` must have all three IDs populated
+2. Every SellerWindowId receiving Nukkad events must exist in the mapping
+3. Every camera_id sending CV signals must exist in the mapping
+4. Warn if a mapping entry has not received CV signals in the last 5 minutes (camera may be offline or mapping wrong)
+
+Failed validation logs a warning. Missing mappings are surfaced in the dashboard health view.
+
+### When mappings change
+
+- Camera replaced: update camera_id and xprotect_device_id, redraw zone polygons
+- POS terminal moved: update seller_window_id, potentially update camera_id if it moved to a different camera's view
+- New store: full onboarding checklist (see INTEGRATION.md)
+- Changes take effect on next validation cycle (15 min) or app server restart
+
 ## System Requirements
 
 ### Edge Device (per store)
@@ -72,6 +121,8 @@ Dashboard connects to app server for data and to XProtect API Gateway for video 
 
 **Throughput:** 5-6 FPS per camera. 30-40 cameras per device.
 **Bandwidth out:** ~40 KB/s metadata (6 FPS × ~170 bytes × 40 cameras). Trivial.
+
+**Hardware validation needed:** 40 concurrent H.265 decode sessions on Arc 140T iGPU is unvalidated. Intel iGPUs typically support 16-32 concurrent decode sessions depending on resolution and generation. If limited to ~20 sessions, fallback: 20 cameras per device (13 devices for 250 cameras) or CPU-assisted decode for overflow streams. Validate on target hardware before deployment.
 
 ### Application Server (centralized)
 
@@ -93,6 +144,7 @@ Dashboard connects to app server for data and to XProtect API Gateway for video 
 | Assembled transactions | ~200 txns (~1 MB) | Clean: 7-30 days. Flagged: 90 days | App server SSD → PostgreSQL |
 | Alerts | ~30 alerts (~100 KB) | 90 days | App server SSD → PostgreSQL |
 | CV signal aggregation | ~240 msg/sec (~40 KB/s = ~3.4 GB raw) | Aggregated windows only, 14 days | App server SSD |
+| CV signals (raw) | ~3.4 GB/store/day (ephemeral) | NOT stored to disk | In-memory only for real-time aggregation. Only aggregated 30s windows are retained (14 days). |
 | Video snippets (flagged) | ~30 clips × ~3 MB = ~90 MB | 90 days | App server SSD or NAS |
 | XProtect recordings | Continuous (managed by WAISL) | XProtect policy (7-30 days) | XProtect recording server |
 
@@ -157,6 +209,7 @@ When a transaction is flagged (risk HIGH or MEDIUM), the server automatically in
 | Edge device offline | No CV signals for that store | Health heartbeat every 30s. Server tracks `last_signal_seen` per camera. After 5 min silence, CV-initiated alerts suppressed for that store (avoid false negatives). |
 | WebRTC can't connect (firewall) | No video playback in dashboard | Test connectivity early in Phase 2A. Fallback: WAISL confirms TURN server availability. If WebRTC fails entirely, video access via XProtect Smart Client (desktop app) as manual fallback. |
 | XProtect retention expires before snippet extraction | Evidence for flagged transactions lost | Reconciliation job runs daily. Alerts generated for any flagged transaction missing a snippet within 24h of flagging. |
+| Nukkad feed down (their outage) | Hundreds of false "Missing POS" alerts | Auto-suppress CV-initiated alerts when no Nukkad events for >10 min during business hours. Raise "POS Feed Down" ops alert. Resume when events return. |
 
 ### What's NOT resilient until Phase 5
 
@@ -176,13 +229,13 @@ These are acceptable for POC and early production with <10 stores. Phase 5 addre
 | Dashboard → App Server | None (POC) → JWT (Phase 3) | Write endpoints (config, resolve) should get basic auth before any non-POC deployment. |
 | Dashboard → XProtect | OAuth bearer token (1h expiry, auto-refresh) | Per MIP SDK docs. |
 
-Phase 3 adds role-based access: operator (view + investigate + resolve) and admin (+ rule config, retention, store setup). Same portal, same team.
-
-### Minimum before non-POC deployment
-- Basic auth on dashboard write endpoints (POST /api/config, POST /api/alerts/{id}/resolve)
+### Phase 1A security (ships with first non-emulator deployment)
+- Basic auth (HTTP Basic over TLS) on all dashboard endpoints
 - MQTT per-device credentials with topic ACLs
 - Nukkad IP allowlist
-- TLS everywhere (MQTT, HTTPS, WSS)
+- TLS everywhere
+
+Phase 3 upgrades to JWT + RBAC (operator/admin roles).
 
 ## Monitoring
 

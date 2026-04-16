@@ -109,6 +109,21 @@ These are different scopes. Seller and bill signals are per-POS because cashiers
 
 This aggregated state is what the correlation engine queries when a transaction commits.
 
+### Signal aggregation strategy
+
+CV signals are NOT persisted to disk. They are ephemeral — used for real-time aggregation, then discarded. Only aggregated windows are retained.
+
+Windows are 30-second fixed intervals per POS zone. Each window summarizes the signals received during that interval:
+- `seller_present_pct`: percentage of frames with seller detected
+- `non_seller_present_pct`: percentage of frames with non-sellers detected (camera-wide)
+- `non_seller_count_max`: max non-seller count observed in the window
+- `bill_motion_detected`: any bill zone motion during the window
+- `bill_bg_change_detected`: any background change during the window
+
+In-memory data structure: `Dict[pos_zone, SortedList[CVSignalWindow]]` — keyed by pos_zone, sorted by window_start. Correlation lookup is O(log n) binary search by timestamp.
+
+Windows older than 14 days are pruned daily. At 250 cameras (~500 POS zones), 14 days of 30-second windows = 500 * 40,320 = ~20M windows, ~100 bytes each = ~2 GB. This moves to PostgreSQL in Phase 2.
+
 ### Other MQTT Topics
 
 - `rlcc/{store_id}/{camera_id}/activity` — Phase 2 seller activity classification (handling_item, handling_cash, idle, etc.)
@@ -178,6 +193,12 @@ Fire on assembled transaction data alone. No CV signal needed.
 
 Employee purchase (rule 18) is not fraud by itself but tracked for audit visibility.
 
+**Rule limitations:**
+- **Rule 3 (Complementary order):** F&B pull API only. The push API does not include an isComplementary field. This rule does not fire for push-assembled transactions.
+- **Rule 11 (Self-granted discount):** Requires grantedBy to use the same identifier format as cashier_id on the transaction header. If Nukkad uses names for grantedBy and IDs for cashier, a mapping table is needed. Verify with Nukkad.
+- **Rule 20 (Outside opening hours):** Requires store opening hours configuration (not yet in stores.json). Add opening_hours per store to enable this rule.
+- **Rule 22 (Manual credit card entry):** Speculative — the push API does not have a 'manual card entry' indicator. This rule can only fire if the payment line's card data indicates manual entry (e.g., no approvalCode but card payment present). Needs Nukkad clarification.
+
 ### CV-Only Rules
 
 Fire on CV signals alone when no POS event exists to correlate with.
@@ -198,11 +219,31 @@ Require both POS data and CV signals.
 | 28 | Drawer open without customer | DrawerOpenedOutsideATransaction + non_seller_present: false | High |
 | 29 | Bill not generated | CommitTransaction but receipt_detected: false | Medium |
 
+### Feed-down suppression
+
+When no Nukkad events have been received for a store for >10 minutes during business hours:
+1. Suppress CV-initiated "Missing POS" alerts (rule 24) for that store
+2. Raise a "POS Feed Down" operational alert (separate from fraud alerts)
+3. Continue running EPOS-only rules if any delayed events arrive
+4. Resume CV-initiated alerts when Nukkad events resume
+
+Without this, a Nukkad outage generates hundreds of false-positive "Missing POS" alerts per hour.
+
 ### Risk Scoring
 
 Each rule's default risk level is in the table above. The rule table is the source of truth — no need to duplicate the list here.
 
-**Compound escalation:** Multiple signals on the same transaction increase severity. Two MEDIUM triggers on one transaction escalate to HIGH.
+### Risk escalation matrix
+
+| Highest rule severity | Count | Final risk |
+|---|---|---|
+| HIGH | 1+ | HIGH |
+| MEDIUM | 3+ | HIGH |
+| MEDIUM | 1-2 | MEDIUM |
+| LOW | any | LOW (unless combined with MEDIUM/HIGH) |
+| MEDIUM + LOW | any combination | MEDIUM |
+
+Single-signal: use the rule's default risk. Multi-signal: apply the matrix above.
 
 ### Configuration
 
@@ -251,6 +292,7 @@ Fetched via `GET /api/transactions/{id}/timeline`. Each `sale_line` entry carrie
 | started_at | datetime | |
 | committed_at | datetime | nullable |
 | bill_number | string | from CommitTransaction, nullable |
+| source | enum | push_assembled / poll_reconciled / poll_primary_arms — how this transaction was ingested |
 | is_previous_transaction | bool | for returns/exchanges |
 | linked_transaction_id | string | nullable |
 | risk_level | enum | High / Medium / Low |
@@ -261,6 +303,15 @@ Fetched via `GET /api/transactions/{id}/timeline`. Each `sale_line` entry carrie
 | cv_receipt_detected | bool | From correlation (per-POS bill zone) |
 | cv_non_seller_count | int | Peak count from correlation (camera-wide) |
 | cv_confidence | enum | HIGH (single-POS camera) / REDUCED (multi-POS camera) / UNAVAILABLE (CV data gap) |
+
+Note: `poll_reconciled` transactions have null values for push-API-only fields (`scan_attribute`, `item_attribute`, `discount_type`, `granted_by` on SaleLines). Only the original 9 fraud rules fire for poll-sourced transactions.
+
+**Reconciliation merge logic:**
+- Push-assembled transactions have `billNumber` from CommitTransaction.
+- Pull-fetched bills have `billNo`.
+- Reconciliation matches by `billNumber == billNo`.
+- If a pull bill has no matching push transaction, create a new TransactionSession with `source=poll_reconciled`.
+- If a push transaction already exists for that billNumber, skip (push data is richer).
 
 ### SaleLine
 
@@ -328,6 +379,12 @@ Fetched via `GET /api/transactions/{id}/timeline`. Each `sale_line` entry carrie
 | resolved_by | string | nullable |
 | resolved_at | datetime | nullable |
 | remarks | string | nullable |
+| camera_id | string | nullable — populated for CV-only and cross-validation alerts |
+| cv_window_start | datetime | nullable — when CV detection started |
+| cv_window_end | datetime | nullable — when CV detection ended |
+| device_id | string | nullable — XProtect GUID for video playback, resolved from mapping |
+
+These fields allow the dashboard to request video playback for CV-only alerts (which have no TransactionSession).
 
 ### CVSignalWindow
 
@@ -455,6 +512,16 @@ QoS 1 (at least once) for all topics. CV signals are idempotent snapshots — th
 ### CV signal gaps
 
 If the server restarts, recent CV aggregation state (the in-memory signal windows) is lost. Transactions that committed during a CV data gap are marked `cv_confidence: UNAVAILABLE`. Cross-validation rules (26-29) are suppressed for those transactions — we'd rather skip CV checks than fire false positives from missing data.
+
+### Timezone normalization
+
+All timestamps are normalized to UTC internally:
+- CV signals: already UTC (ISO 8601 with Z)
+- Nukkad push events: timezone TBD (pending clarification). Assumed IST (UTC+5:30) based on deployment location. Converted to UTC on receipt.
+- Nukkad sales API: local time without timezone indicator. Assumed IST. Converted to UTC on receipt.
+- Server timestamps (received_at): UTC
+
+If Nukkad confirms their push API uses UTC, remove the IST conversion. The correlation engine, event timeline, and reconciliation all operate in UTC internally. Dashboard converts to local time for display.
 
 ### Clock skew
 
