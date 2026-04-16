@@ -59,6 +59,9 @@ async def receive_event(request: Request):
     elif event_type == "CommitTransaction":
         txn = assembler.commit(payload)
         if txn:
+            from backend.correlator import correlate
+            from backend.main import cv_consumer
+            txn = correlate(txn, cv_consumer, config)
             # Run fraud rules
             alerts = fraud_engine.evaluate(txn)
 

@@ -11,6 +11,8 @@ from backend.storage import Storage
 from backend.assembler import TransactionAssembler
 from backend.fraud import FraudEngine
 from backend.ws import ConnectionManager
+from backend.cv_consumer import CVConsumer
+from backend.correlator import correlate
 
 POC_DIR = Path(__file__).parent.parent
 CONFIG_DIR = POC_DIR / "config"
@@ -22,6 +24,7 @@ storage = Storage(data_dir=str(DATA_DIR))
 assembler = TransactionAssembler()
 fraud_engine = FraudEngine(config.rules)
 ws_manager = ConnectionManager()
+cv_consumer = CVConsumer()
 
 
 async def config_watcher():
@@ -60,6 +63,7 @@ async def lifespan(app: FastAPI):
     tasks = [
         asyncio.create_task(config_watcher()),
         asyncio.create_task(expiry_checker()),
+        asyncio.create_task(cv_consumer.run()),
     ]
     yield
     for t in tasks:
