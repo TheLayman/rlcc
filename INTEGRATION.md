@@ -180,19 +180,64 @@ The existing Nukkad sales data API (`SalesPoller`) is not replaced by the push A
 
 **Reconciliation.** Hourly job polls for completed bills, compares against push-assembled transactions by `billNumber`, backfills any gaps. Safety net for push API delivery failures.
 
-### Endpoint
+### Two API variants
+
+There are two separate sales APIs for different POS types. Same endpoint pattern, different base URLs and response schemas.
+
+| Variant | Base URL | POS Type | Doc Version | Stores |
+|---------|----------|----------|-------------|--------|
+| **F&B** (Posifly) | `https://integrations.fnb.posifly.in/v1/` | Food & Beverage | v5.0 (20-Aug-2025) | Airport restaurants, cafes, lounges |
+| **Retail** (Nukkad Shops) | `https://openapis.nukkadshops.com/v1/` | Retail | v4.0 (25-Nov-2024) | Airport retail shops |
+
+Both use: `POST {baseurl}/sales/getSalesWithItems`
 
 ```
-POST https://stage.nukkadshops.com:8098/v1/rlcc/launch-event  (staging)
-POST https://rlcc.nukkadshops.com:8098/v1/rlcc/launch-event   (production)
 Headers:
   Content-Type: application/json
   X-Nukkad-API-Token: {token}
 ```
 
-Request: `{"cin": "NSCIN8227", "from": "1734220800", "to": "1734307200", "pageNo": "1"}`
+Request: `{"cin": "NSCIN8227", "from": "unix_timestamp", "to": "unix_timestamp", "pageNo": "1"}`
 
-Response path: `data.bills[]`
+Response path: `data.bills[]` (max 100 bills per page)
+
+API docs: [samples/nukkad-sales-api-fnb-v5.pdf](samples/nukkad-sales-api-fnb-v5.pdf), [samples/nukkad-sales-api-retail-v4.pdf](samples/nukkad-sales-api-retail-v4.pdf)
+
+### F&B-only fields (not in Retail)
+
+The F&B API returns richer data relevant to fraud detection:
+
+| Field | Type | Description | Fraud relevance |
+|-------|------|-------------|-----------------|
+| `isComplementary` | string | "Yes"/"No" — complimentary bill | Complementary order rule |
+| `status` | string | "Completed" | Bill status tracking |
+| `waiterName` | string | Waiter/staff who served | Employee attribution |
+| `tblName` / `tblCode` | string/int | Table name and code | Dine-in context |
+| `tokenNum` | int | Token number | Order tracking |
+| `paxCnt` | int | Pax (guest) count | Customer count per bill |
+| `cancelDate` / `cancelTime` | string | When bill was cancelled | Cancellation detection |
+| `voidReason` | string | Reason for void | Void rule with reason |
+| `tipAmt` | number | Tip amount | Transaction total accuracy |
+| `returnAmt` | number | Return/refund amount | Refund detection |
+| `charges[]` | array | Service charges, delivery charges | `{chargeName, amount}` |
+| `complementaryRemarks` | string | Reason for complementary bill | Complementary audit |
+| `dealData[]` | array | Combo deals with nested items | Deal pricing fraud |
+| `modifierInfo[]` | array | Item modifiers (add-ons) | Modifier pricing |
+| payModes: `cardNo` | string | Card number (masked) | Payment verification |
+| payModes: `approvalCode` | string | Card approval code | Payment verification |
+| payModes: `returnAmt` | number | Return amount per pay mode | Per-mode refund tracking |
+
+### Retail-only differences
+
+- No `isComplementary`, `waiterName`, `tblName`, `tokenNum`, `paxCnt`, `cancelDate/Time`, `voidReason`, `tipAmt`, `charges[]`, `complementaryRemarks`, `dealData[]`, `modifierInfo[]`
+- Simpler payment: no `cardNo`, `approvalCode`, `returnAmt` per payMode
+- `billType` values: "Sale", "Cancel"
+- `billSource` values: "POS", "MPOS"
+- Uses `cashierDetails` object (name, mobile, email) instead of flat `cashierName`/`staffId`
+
+### Implementation note
+
+The `SalesPoller` needs to detect store type (F&B vs Retail from `stores.json` `pos_system` field) and use the correct base URL. F&B stores have significantly richer fraud data from the pull API — `voidReason`, `cancelDate`, `isComplementary`, `returnAmt`, and `charges` are all usable by the fraud engine even without the push API.
 
 ### Bill schema
 
