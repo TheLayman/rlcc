@@ -190,7 +190,82 @@ Headers:
   X-Nukkad-API-Token: {token}
 ```
 
-Payload: `{"cin": "NDCIN1223", "from": "epoch", "to": "epoch", "pageNo": "1"}`
-Response: `data.response.data.bills[]` — aggregated bill objects.
+Request: `{"cin": "NSCIN8227", "from": "1734220800", "to": "1734307200", "pageNo": "1"}`
+
+Response path: `data.bills[]`
+
+### Bill schema
+
+Full sample: [samples/nukkad-sales-api-response.json](samples/nukkad-sales-api-response.json)
+
+**Bill-level fields:**
+
+| Field | Type | Example | Notes |
+|-------|------|---------|-------|
+| nscin | string | `"NSCIN8227"` | Store identifier (CIN code) |
+| billNo | string | `"N2023D/2526/10032"` | Unique bill number — dedup key |
+| consumerName | string | `"Mr Abdul Sameer"` | Customer name (when available) |
+| consumerMobile | string | `"9207259731"` | Customer mobile |
+| cashierDetails | object | `{cashierName, mobile, email}` | Cashier who processed the bill |
+| billType | string | `"Sale"` | Observed values: `Sale` |
+| billSource | string | `"POS"` | |
+| billDate | string | `"2025-12-15"` | YYYY-MM-DD |
+| billTime | string | `"11:59:21"` | HH:MM:SS |
+| billSyncTime | string | `"2025-12-15 11:58:35"` | When bill synced to Nukkad cloud |
+| terminalNo | string | `"POS4"` | POS terminal — maps to SellerWindowId via mapping.json |
+| saleAmt | number | `470` | Gross sale amount |
+| discAmt | number | `0` | Discount amount |
+| totalDiscPercent | number | `0` | Discount percentage |
+| netSaleAmt | number | `470` | Net after discount |
+| taxAmnt | number | `22.38` | Total tax |
+| roundingAmnt | number | `0` | Rounding adjustment |
+| refundReason | string | `""` | Reason if refund |
+| boardingPassDetails | array | `[]` | Passenger boarding pass data (when captured) |
+| offerName / offerDesc / offerType | string | `""` | Offer applied to bill |
+| offerDiscount | number | `0` | Offer discount amount |
+
+**Item fields (per `items[]`):**
+
+| Field | Type | Example | Notes |
+|-------|------|---------|-------|
+| name | string | `"Non AC Dor 6hrs"` | Item name |
+| category / subcategory | string | `"Miscellaneous"` | Product category |
+| productCode | string | `"HAL001"` | Internal product code |
+| qty | number | `1` | Quantity |
+| sp | number | `470` | Selling price |
+| mrp | number | `470` | Maximum retail price |
+| discount | number | `0` | Per-item discount amount |
+| discountPer | number | `0` | Per-item discount % |
+| taxType | string | `"CGST + SGST"` | Tax type applied |
+| tax | number | `5` | Tax rate % |
+| taxBreakUp | array | `[{type, tax, taxableAmt, taxAmt, cgst, sgst, igst}]` | Detailed tax breakdown |
+| hsnCode | string | `"996329"` | HSN code for GST |
+
+**Payment mode fields (per `payModes[]`):**
+
+| Field | Type | Example | Notes |
+|-------|------|---------|-------|
+| mode | string | `"Phonepe"` | Payment method. Observed: `Cash`, `Card`, `Phonepe`, `Return Amount` |
+| tenderCode | string | `"111"` | Tender code |
+| amt | number | `470` | Amount paid via this mode |
+| cnvRate | number | `1` | Conversion rate |
+| currency | string | `"INR"` | Currency code |
+
+### What the sales API gives vs what the push API gives
+
+| Data point | Sales API (poll) | Push API (real-time) |
+|-----------|-----------------|---------------------|
+| Timing | Aggregated bill after completion | Per-event as it happens |
+| Items | Per-item with name, qty, price, discount, tax | Per-item with scanAttribute, itemAttribute, discountType, grantedBy |
+| Payments | Per-mode with amount | Per-line with lineAttribute enum (Cash/CreditCard/UPI/etc.), cardType |
+| Manual entry detection | Not available | `scanAttribute: ManuallyEntered` |
+| Manual discount detection | Not available | `discountType: ManuallyEnteredValue` |
+| Drawer events | Not available | `transactionType: DrawerOpenedOutsideATransaction` |
+| Reprint | Not available | `BillReprint` event |
+| Transaction lifecycle | Not available (only completed bills) | `AddTransactionEvent` (suspended/resumed/cancelled) |
+| Customer details | consumerName, consumerMobile, boardingPassDetails | debitor field (TBD) |
+| Cashier details | cashierName, mobile, email | cashier ID only |
+
+The sales API is richer on customer/cashier contact details. The push API is richer on transaction behavior signals (manual entry, discounts, lifecycle events). Both are needed.
 
 See `sales_poller.py` in the backend repo for the current implementation.
