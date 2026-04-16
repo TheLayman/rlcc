@@ -403,9 +403,28 @@ Fetched via `GET /api/transactions/{id}/timeline`. Each `sale_line` entry carrie
 
 ---
 
-## 10. Backward Compatibility
+## 10. Sales Data API (Existing Pull-Based Integration)
 
-The existing `SalesPoller` stays for ARMS POS stores. Nukkad's push API does not cover ARMS — those stores continue on pull-based 2-minute polling. The fraud engine accepts transactions from both paths: assembled from push events (new) or from polled bill data (existing). Same rules, same alert pipeline, different ingest.
+The existing Nukkad sales data API (polled by `SalesPoller`) is not replaced by the push API. It serves three purposes:
+
+**Primary source for ARMS POS stores.** The push API does not cover ARMS. Stores with `pos_system: "ARMS-Dino"` continue on pull-based 2-minute polling. The fraud engine accepts transactions from both paths: assembled from push events (granular) or from polled bill data (aggregated). Same rules, same alert pipeline — but polled bills lack per-item `scanAttribute`, `discountType`, and `itemAttribute` enums, so the new rules (manual entry, manual discount, etc.) only fire for push API stores.
+
+**Historical backfill.** When a new store comes online or the system is redeployed, the push API won't replay past events. The sales data API fetches completed bills for the past N days via `SalesPoller.fetch_historical(days)`. This populates the transaction history so the dashboard isn't empty on day one.
+
+**Reconciliation.** If our server was down and Nukkad didn't retry push events, those transactions are lost from the push stream. A periodic reconciliation job polls the sales data API for completed bills, compares against assembled transactions by `billNumber`, and backfills any gaps. This runs hourly (configurable) and catches any push API misses.
+
+```
+Nukkad Push API (real-time, per-item, per-payment)
+    → Primary ingest for Posifly POS stores
+    → Events arrive in seconds, full enum detail
+    → 29 fraud rules applicable
+
+Nukkad Sales Data API (poll every 2 min, aggregated bills)
+    → Primary ingest for ARMS POS stores
+    → Historical backfill on deploy/restart
+    → Hourly reconciliation to catch push API gaps
+    → 9 original fraud rules applicable (less granular data)
+```
 
 ---
 

@@ -170,12 +170,27 @@ Checklist for bringing a new store online:
 - [ ] Verify: Video playback works for the transaction timestamp
 - [ ] Verify: Alert rules fire correctly (test with a void or high-discount transaction)
 
-## 5. ARMS POS Fallback
+## 5. Nukkad Sales Data API (Existing Pull-Based)
 
-The Nukkad push API doc states: "This document does not cover ARMS."
+The existing Nukkad sales data API (`SalesPoller`) is not replaced by the push API. It's still needed for three things:
 
-Stores using ARMS POS (`pos_system: "ARMS-Dino"` in stores.json) continue on the existing poll-based integration:
-- `SalesPoller` pulls bill data from Nukkad's ARMS API every 2 minutes
-- Data is less granular (no per-item scanAttribute, no discountType, no payment line detail)
-- Only the original 9 fraud rules apply (new rules that depend on push API enums won't fire)
-- This is a known limitation until Nukkad provides ARMS push API coverage
+**ARMS POS stores.** The push API doc states "does not cover ARMS." Stores with `pos_system: "ARMS-Dino"` continue on 2-minute polling. Less granular data — no per-item `scanAttribute`, `discountType`, or `itemAttribute` enums. Only the original 9 fraud rules fire.
+
+**Historical backfill.** On new store deployment or system restart, `SalesPoller.fetch_historical(days)` pulls completed bills for the past N days. Push API doesn't replay past events.
+
+**Reconciliation.** Hourly job polls for completed bills, compares against push-assembled transactions by `billNumber`, backfills any gaps. Safety net for push API delivery failures.
+
+### Endpoint
+
+```
+POST https://stage.nukkadshops.com:8098/v1/rlcc/launch-event  (staging)
+POST https://rlcc.nukkadshops.com:8098/v1/rlcc/launch-event   (production)
+Headers:
+  Content-Type: application/json
+  X-Nukkad-API-Token: {token}
+```
+
+Payload: `{"cin": "NDCIN1223", "from": "epoch", "to": "epoch", "pageNo": "1"}`
+Response: `data.response.data.bills[]` — aggregated bill objects.
+
+See `sales_poller.py` in the backend repo for the current implementation.

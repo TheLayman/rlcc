@@ -151,7 +151,7 @@ When a transaction is flagged (risk HIGH or MEDIUM), the server automatically in
 |------|--------|-----------|
 | App server crash | In-flight transactions lost, CV signals dropped, dashboard down | Raw events persisted to WAL on receipt → replay on restart reconstructs assembler state. Process supervisor (systemd) auto-restarts. |
 | MQTT broker crash | Edge CV signals dropped, correlation blind | Mosquitto persistent sessions retain QoS 1 messages. Edge devices buffer locally and retry. EPOS-only rules continue working. |
-| Nukkad doesn't retry | POS events permanently lost during our downtime | WAL persists events on receipt. If Nukkad truly doesn't retry, we add a periodic reconciliation poll against Nukkad's API to catch gaps. |
+| Nukkad doesn't retry | POS events permanently lost during our downtime | WAL persists events on receipt. Hourly reconciliation job polls existing Nukkad sales data API, compares against push-assembled transactions by billNumber, backfills gaps. |
 | Clock skew (edge vs Nukkad vs server) | Correlation matches wrong CV window, timeline ordering wrong | NTP mandatory on edge devices. Correlation window widened ±3s. Server adds `received_at` timestamp as ordering fallback. |
 | JSONL files grow unbounded | Query slowdown, disk full | Daily file rotation. Disk space monitoring. PostgreSQL migration in Phase 2. |
 | Edge device offline | No CV signals for that store | Health heartbeat every 30s. Server tracks `last_signal_seen` per camera. After 5 min silence, CV-initiated alerts suppressed for that store (avoid false negatives). |
