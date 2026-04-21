@@ -69,3 +69,4 @@ Stop:
 
 - `camera_mapping.json` includes the 5 POC stores and placeholder RTSP values. Replace `rtsp_url` and zone polygons with live store values before cutover.
 - Saved clips are trimmed around each transaction or missing-POS alert and retained for 2 days.
+- The RLCC CV detector now follows the same default profile as the older `fds-cv` stack: `yolov8m` on GPU, `yolov8s` on CPU. Override with `YOLO_MODEL_PATH` only if you want a different model.

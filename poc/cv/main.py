@@ -83,7 +83,11 @@ class CVRuntime:
             return None
         if os.getenv("CV_ENABLE_DETECTOR", "1") == "0":
             return None
-        model_name = os.getenv("YOLO_MODEL_PATH", "yolov8n.pt")
+        model_name = os.getenv("YOLO_MODEL_PATH", "").strip()
+        force_cpu = os.getenv("CV_FORCE_CPU", "0").strip().lower() in {"1", "true", "yes", "on"}
+        use_gpu = torch is not None and torch.cuda.is_available() and not force_cpu
+        if not model_name:
+            model_name = "yolov8m.pt" if use_gpu else "yolov8s.pt"
         try:
             return YOLO(model_name)
         except Exception:
@@ -244,7 +248,8 @@ class CVRuntime:
         if self.detector is None:
             return []
         try:
-            device = 0 if torch is not None and torch.cuda.is_available() else "cpu"
+            force_cpu = os.getenv("CV_FORCE_CPU", "0").strip().lower() in {"1", "true", "yes", "on"}
+            device = 0 if torch is not None and torch.cuda.is_available() and not force_cpu else "cpu"
             results = self.detector.predict(frame, classes=[0], conf=0.35, imgsz=640, verbose=False, device=device)
             boxes: list[tuple[int, int, int, int]] = []
             for box in results[0].boxes:
