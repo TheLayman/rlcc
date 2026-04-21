@@ -26,9 +26,7 @@ import {
   SelectValue,
 } from '@/app/components/ui/select';
 import { Switch } from '@/app/components/ui/switch';
-
-const BACKEND_BASE = `http://${window.location.hostname}:8001`;
-const CV_BASE = `http://${window.location.hostname}:8000`;
+import { BACKEND_BASE, CV_BASE } from '@/lib/runtime-config';
 
 type PolygonKey = 'seller_zone' | 'bill_zone';
 type Point = [number, number];

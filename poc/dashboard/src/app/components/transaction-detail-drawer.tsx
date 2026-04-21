@@ -5,6 +5,7 @@ import type { TimelineEvent, Transaction } from '@/lib/mock-data';
 import { Badge } from '@/app/components/ui/badge';
 import { Button } from '@/app/components/ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/app/components/ui/sheet';
+import { BACKEND_BASE } from '@/lib/runtime-config';
 
 interface TransactionDetailDrawerProps {
   transaction: Transaction | null;
@@ -12,8 +13,6 @@ interface TransactionDetailDrawerProps {
   open: boolean;
   onClose: () => void;
 }
-
-const BACKEND_BASE = `http://${window.location.hostname}:8001`;
 
 function riskBadgeClasses(level: string): string {
   switch (level) {

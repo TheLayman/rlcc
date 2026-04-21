@@ -15,14 +15,13 @@ import {
   SelectValue,
 } from '@/app/components/ui/select';
 import { Textarea } from '@/app/components/ui/textarea';
+import { BACKEND_BASE } from '@/lib/runtime-config';
 
 interface AlertWorkflowProps {
   alerts: Alert[];
   setAlerts: React.Dispatch<React.SetStateAction<Alert[]>>;
   transactions: Transaction[];
 }
-
-const BACKEND_BASE = `http://${window.location.hostname}:8001`;
 
 export function AlertWorkflow({ alerts, setAlerts, transactions }: AlertWorkflowProps) {
   const [statusFilter, setStatusFilter] = useState<string>('all');

@@ -40,8 +40,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/app/components/ui/select';
-
-const BACKEND_BASE = `http://${window.location.hostname}:8001`;
+import { BACKEND_BASE, BACKEND_WS_BASE } from '@/lib/runtime-config';
 
 function AnimatedCount({ value }: { value: number }) {
   const [displayed, setDisplayed] = useState(0);
@@ -196,7 +195,12 @@ export function Dashboard() {
 
   const reloadHistoricalData = async () => {
     await loadFromLocal();
-    fetch(`${BACKEND_BASE}/api/history?days=5`).catch(() => {});
+    try {
+      await fetch(`${BACKEND_BASE}/api/history?days=5`);
+    } catch (error) {
+      console.error('Failed to refresh sales history:', error);
+    }
+    await loadFromLocal();
   };
 
   const reloadAfterConfigChange = async () => {
@@ -230,7 +234,7 @@ export function Dashboard() {
   }, []);
 
   useEffect(() => {
-    const ws = new WebSocket(`ws://${window.location.hostname}:8001/ws`);
+    const ws = new WebSocket(`${BACKEND_WS_BASE}/ws`);
     ws.onopen = () => {
       setIsConnected(true);
       toast.success('Connected to RLCC backend');

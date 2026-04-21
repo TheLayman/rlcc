@@ -5,6 +5,7 @@ import { Badge } from '@/app/components/ui/badge';
 import { Switch } from '@/app/components/ui/switch';
 import { Save, RotateCcw, Percent, IndianRupee, Package, Clock, ShieldAlert } from 'lucide-react';
 import { toast } from 'sonner';
+import { BACKEND_BASE } from '@/lib/runtime-config';
 
 interface RuleConfig {
   discount_threshold_percent: number;
@@ -105,7 +106,7 @@ export function SettingsPanel({ onConfigSaved }: SettingsPanelProps) {
   const hasChanges = JSON.stringify(config) !== JSON.stringify(savedConfig);
 
   useEffect(() => {
-    fetch(`http://${window.location.hostname}:8001/api/config`)
+    fetch(`${BACKEND_BASE}/api/config`)
       .then(res => res.json())
       .then(data => {
         setConfig(data);
@@ -118,7 +119,7 @@ export function SettingsPanel({ onConfigSaved }: SettingsPanelProps) {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const res = await fetch(`http://${window.location.hostname}:8001/api/config`, {
+      const res = await fetch(`${BACKEND_BASE}/api/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),

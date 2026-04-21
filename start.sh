@@ -10,6 +10,23 @@ DATA_DIR="$POC_DIR/data"
 REDIS_DIR="$DATA_DIR/redis"
 REDIS_PID="$REDIS_DIR/redis.pid"
 REDIS_CONF="$REDIS_DIR/redis.conf"
+BACKEND_PORT="8001"
+CV_PORT="8000"
+DASHBOARD_PORT="5173"
+
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
+  BACKEND_PORT="${BACKEND_PORT:-8001}"
+  CV_PORT="${CV_PORT:-8000}"
+  DASHBOARD_PORT="${DASHBOARD_PORT:-5173}"
+fi
+
+export VITE_BACKEND_PORT="$BACKEND_PORT"
+export VITE_CV_PORT="$CV_PORT"
+export VITE_DASHBOARD_PORT="$DASHBOARD_PORT"
 
 fail() {
   echo "start.sh: $1" >&2
@@ -67,11 +84,11 @@ stop_redis() {
 
 stop_all() {
   echo "Stopping RLCC services..."
-  stop_port 8000
-  stop_port 8001
-  stop_port 5173
+  stop_port "$CV_PORT"
+  stop_port "$BACKEND_PORT"
+  stop_port "$DASHBOARD_PORT"
   stop_redis
-  echo "Ports cleared: 8000, 8001, 5173"
+  echo "Ports cleared: $CV_PORT, $BACKEND_PORT, $DASHBOARD_PORT"
 }
 
 if [ "${1:-}" = "stop" ]; then
@@ -91,7 +108,7 @@ ensure_dirs
 stop_all
 start_redis
 
-echo "Starting RLCC CV service on :8000 ..."
+echo "Starting RLCC CV service on :$CV_PORT ..."
 (
   cd "$POC_DIR"
   . "$VENV_DIR/bin/activate"
@@ -99,7 +116,7 @@ echo "Starting RLCC CV service on :8000 ..."
   echo $! > "$DATA_DIR/cv.pid"
 )
 
-echo "Starting RLCC backend on :8001 ..."
+echo "Starting RLCC backend on :$BACKEND_PORT ..."
 (
   cd "$POC_DIR"
   . "$VENV_DIR/bin/activate"
@@ -107,10 +124,10 @@ echo "Starting RLCC backend on :8001 ..."
   echo $! > "$DATA_DIR/backend.pid"
 )
 
-echo "Starting RLCC dashboard on :5173 ..."
+echo "Starting RLCC dashboard on :$DASHBOARD_PORT ..."
 (
   cd "$POC_DIR/dashboard"
-  nohup npm run dev -- --host 0.0.0.0 --port 5173 > "$LOG_DIR/dashboard.log" 2>&1 &
+  nohup npm run dev -- --host 0.0.0.0 --port "$DASHBOARD_PORT" > "$LOG_DIR/dashboard.log" 2>&1 &
   echo $! > "$DATA_DIR/dashboard.pid"
 )
 
@@ -120,10 +137,10 @@ cat <<EOF
 
 RLCC services started.
 
-Dashboard:    http://<server-ip>:5173
-Backend:      http://<server-ip>:8001
-Push API:     POST http://<server-ip>:8001/v1/rlcc/launch-event
-CV Debug:     http://<server-ip>:8000/stream/view
+Dashboard:    http://<server-ip>:$DASHBOARD_PORT
+Backend:      http://<server-ip>:$BACKEND_PORT
+Push API:     POST http://<server-ip>:$BACKEND_PORT/v1/rlcc/launch-event
+CV Debug:     http://<server-ip>:$CV_PORT/stream/view
 Redis:        127.0.0.1:6379
 
 Logs:

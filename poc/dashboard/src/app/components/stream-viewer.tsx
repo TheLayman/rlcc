@@ -2,6 +2,7 @@ import { Card } from '@/app/components/ui/card';
 import { Activity, ExternalLink } from 'lucide-react';
 import { Badge } from '@/app/components/ui/badge';
 import { Button } from '@/app/components/ui/button';
+import { CV_BASE } from '@/lib/runtime-config';
 
 interface StreamViewerProps {
   vasData: any[];
@@ -9,7 +10,7 @@ interface StreamViewerProps {
 }
 
 export function StreamViewer({ vasData, posData }: StreamViewerProps) {
-  const cvDebugUrl = `http://${window.location.hostname}:8000/stream/view`;
+  const cvDebugUrl = `${CV_BASE}/stream/view`;
 
   return (
     <div className="space-y-6">
