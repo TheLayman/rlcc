@@ -28,6 +28,8 @@ class Settings:
     external_sales_url: str
     external_sales_header_token: str
     torch_whl_index_url: str
+    sales_reconciliation_minutes: int
+    sales_reconciliation_lookback_minutes: int
 
 
 def get_settings(env_path: Path | None = None) -> Settings:
@@ -45,4 +47,6 @@ def get_settings(env_path: Path | None = None) -> Settings:
         external_sales_url=os.getenv("EXTERNAL_SALES_URL", ""),
         external_sales_header_token=os.getenv("EXTERNAL_SALES_HEADER_TOKEN", ""),
         torch_whl_index_url=os.getenv("TORCH_WHL_INDEX_URL", "https://download.pytorch.org/whl/cu124"),
+        sales_reconciliation_minutes=int(os.getenv("SALES_RECONCILIATION_MINUTES", "2")),
+        sales_reconciliation_lookback_minutes=int(os.getenv("SALES_RECONCILIATION_LOOKBACK_MINUTES", "10")),
     )

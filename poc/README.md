@@ -17,6 +17,13 @@ Single-box POC for the 5-store Posifly rollout.
 - Header: `x-authorization-key: <NUKKAD_PUSH_AUTH_KEY>`
 - Body: stringified JSON payload from Nukkad
 
+## Sales Pull API
+
+- Source: `EXTERNAL_SALES_URL` + `EXTERNAL_SALES_HEADER_TOKEN`
+- Use: historical backfill, recent reconciliation, and pre-push dashboard population
+- Background sync: every `SALES_RECONCILIATION_MINUTES` minutes
+- Manual trigger: `GET /api/history?days=5`
+
 ## Required Files
 
 - `poc/.env`
@@ -41,6 +48,7 @@ From repo root:
 - installs backend, CV, and test Python packages
 - installs Node 20 if needed
 - installs dashboard dependencies
+- reuses an existing system Torch install when available, so `pytorch.org` is not required by default
 
 ## Run
 
@@ -70,3 +78,4 @@ Stop:
 - `camera_mapping.json` includes the 5 POC stores and placeholder RTSP values. Replace `rtsp_url` and zone polygons with live store values before cutover.
 - Saved clips are trimmed around each transaction or missing-POS alert and retained for 2 days.
 - The RLCC CV detector now follows the same default profile as the older `fds-cv` stack: `yolov8m` on GPU, `yolov8s` on CPU. Override with `YOLO_MODEL_PATH` only if you want a different model.
+- If push is not live yet, the dashboard still populates from the sales pull API. Missing-POS alerts stay suppressed until push traffic is actually seen for that store.

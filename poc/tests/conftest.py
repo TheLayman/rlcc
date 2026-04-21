@@ -10,6 +10,12 @@ TEST_SESSION_IDS = {
     "test-session-normal-001",
 }
 
+TEST_LINE_MARKERS = {
+    "TEST/PULL/",
+    "POLL-NSCIN8227-TEST-PULL",
+    "push-existing-001",
+}
+
 
 @pytest.fixture(autouse=True)
 def clean_test_transactions():
@@ -27,6 +33,8 @@ def _remove_test_records(name: str):
     lines = path.read_text().splitlines()
     filtered = [
         line for line in lines
-        if line.strip() and not any(sid in line for sid in TEST_SESSION_IDS)
+        if line.strip()
+        and not any(sid in line for sid in TEST_SESSION_IDS)
+        and not any(marker in line for marker in TEST_LINE_MARKERS)
     ]
     path.write_text("\n".join(filtered) + ("\n" if filtered else ""))

@@ -63,7 +63,7 @@ class FraudEngine:
         """Return True if no events received for >feed_down_minutes."""
         last = self._last_event.get(store_id)
         if last is None:
-            return False
+            return True
         delta = datetime.now(timezone.utc) - last
         return delta > timedelta(minutes=self._feed_down_minutes)
 

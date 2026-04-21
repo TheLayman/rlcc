@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 import backend.deps as deps
 from backend.correlator import correlate
 from backend.models import Alert, TransactionSession
+from backend.persistence import find_transaction_by_bill_number, load_alerts, load_transactions, save_alerts, save_transactions
 from backend.serializers import serialize_alert, serialize_transaction
 
 router = APIRouter()
@@ -95,6 +96,33 @@ async def _broadcast_raw_pos() -> None:
     await deps.ws_manager.broadcast("RAW_POS_DATA", deps.storage.get_recent_pos_events())
 
 
+def _persist_committed_transaction(txn: TransactionSession, alerts: list[Alert]) -> bool:
+    existing = find_transaction_by_bill_number(txn.bill_number)
+    if existing and existing.source == "push_assembled":
+        return False
+
+    replace_ids: set[str] = set()
+    if existing and existing.source.startswith("poll_"):
+        replace_ids.add(existing.id)
+
+    transactions = [
+        current
+        for current in load_transactions()
+        if current.id not in replace_ids and current.id != txn.id and current.bill_number != txn.bill_number
+    ]
+    current_alerts = [
+        alert
+        for alert in load_alerts()
+        if alert.transaction_id not in replace_ids and alert.transaction_id != txn.id
+    ]
+
+    transactions.append(txn)
+    current_alerts.extend(alerts)
+    save_transactions(transactions)
+    save_alerts(current_alerts)
+    return True
+
+
 @router.post("/v1/rlcc/launch-event")
 async def receive_event(request: Request):
     expected_key = deps.settings.push_auth_key
@@ -156,12 +184,10 @@ async def receive_event(request: Request):
                 alert.device_id = alert.device_id or txn.device_id
                 alert.snippet_path = alert.snippet_path or txn.snippet_path
 
-            deps.storage.append("transactions", txn.model_dump())
-            await deps.ws_manager.broadcast("NEW_TRANSACTION", serialize_transaction(txn, deps.config))
-
-            for alert in alerts:
-                deps.storage.append("alerts", alert.model_dump())
-                await deps.ws_manager.broadcast("NEW_ALERT", serialize_alert(alert, deps.config))
+            if _persist_committed_transaction(txn, alerts):
+                await deps.ws_manager.broadcast("NEW_TRANSACTION", serialize_transaction(txn, deps.config))
+                for alert in alerts:
+                    await deps.ws_manager.broadcast("NEW_ALERT", serialize_alert(alert, deps.config))
 
     elif event_type == "BillReprint":
         event_ts = _parse_ts(payload.get("transactionTimeStamp"))

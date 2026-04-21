@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 POC_DIR="$ROOT_DIR/poc"
 VENV_DIR="$POC_DIR/.venv"
-TORCH_INDEX_URL="${TORCH_WHL_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
+TORCH_INDEX_URL="${TORCH_WHL_INDEX_URL:-}"
 
 UBUNTU_PACKAGES=(
   python3
@@ -52,14 +52,39 @@ fi
 
 mkdir -p "$POC_DIR/logs" "$POC_DIR/data/redis" "$POC_DIR/data/buffer" "$POC_DIR/data/snippets" "$POC_DIR/data/events"
 
-python3 -m venv "$VENV_DIR"
+USE_SYSTEM_SITE_PACKAGES=0
+if python3 - <<'PY' >/dev/null 2>&1
+import torch
+import torchvision
+print(torch.cuda.is_available())
+PY
+then
+  USE_SYSTEM_SITE_PACKAGES=1
+fi
+
+if [ "$USE_SYSTEM_SITE_PACKAGES" -eq 1 ]; then
+  python3 -m venv --system-site-packages "$VENV_DIR"
+else
+  python3 -m venv "$VENV_DIR"
+fi
 . "$VENV_DIR/bin/activate"
 
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install --index-url "$TORCH_INDEX_URL" torch torchvision
 python -m pip install -r "$POC_DIR/requirements-backend.txt"
 python -m pip install -r "$POC_DIR/requirements-cv.txt"
 python -m pip install -r "$POC_DIR/requirements-dev.txt"
+
+if ! python - <<'PY' >/dev/null 2>&1
+import torch
+import torchvision
+PY
+then
+  if [ -n "$TORCH_INDEX_URL" ]; then
+    python -m pip install --index-url "$TORCH_INDEX_URL" torch torchvision
+  else
+    python -m pip install torch torchvision
+  fi
+fi
 
 cd "$POC_DIR/dashboard"
 if [ -f package-lock.json ]; then

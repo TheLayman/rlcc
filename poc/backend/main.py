@@ -14,9 +14,21 @@ from fastapi.staticfiles import StaticFiles
 import backend.deps as deps
 from backend.assembler import TransactionAssembler
 from backend.config import Config
+from backend.correlator import correlate
 from backend.cv_consumer import ActivityState, CVConsumer
 from backend.fraud import FraudEngine
 from backend.models import Alert, TransactionSession
+from backend.persistence import (
+    find_transaction_by_bill_number,
+    load_alerts,
+    load_transactions,
+    parse_dt as parse_record_dt,
+    save_alerts,
+    save_transactions,
+    sort_alerts,
+    sort_transactions,
+)
+from backend.sales_poller import SalesPoller, map_bill_to_transaction
 from backend.serializers import build_bill_data, serialize_alert, serialize_transaction
 from backend.settings import get_settings
 from backend.storage import Storage
@@ -37,49 +49,42 @@ deps.fraud_engine = FraudEngine(deps.config.rules)
 deps.ws_manager = ConnectionManager()
 deps.cv_consumer = CVConsumer(redis_url=deps.settings.redis_url)
 deps.video_manager = VideoManager(data_dir=DATA_DIR, retention_days=deps.settings.video_retention_days)
+sales_poller = SalesPoller(
+    api_url=deps.settings.external_sales_url,
+    api_token=deps.settings.external_sales_header_token,
+    config=deps.config,
+)
+sales_sync_lock = asyncio.Lock()
+sales_sync_state = {
+    "configured": sales_poller.configured,
+    "last_run_at": None,
+    "last_success_at": None,
+    "last_error": "",
+    "last_mode": "",
+    "last_fetched_bills": 0,
+    "last_new_transactions": 0,
+    "last_new_alerts": 0,
+}
 
 
 def _parse_dt(value) -> datetime | None:
-    if value is None or value == "":
-        return None
-    if isinstance(value, datetime):
-        return value
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    return parse_record_dt(value)
 
 
 def _load_transactions() -> list[TransactionSession]:
-    txns: list[TransactionSession] = []
-    for record in deps.storage.read("transactions"):
-        try:
-            txns.append(TransactionSession(**record))
-        except Exception:
-            continue
-    return txns
+    return load_transactions()
 
 
 def _load_alerts() -> list[Alert]:
-    alerts: list[Alert] = []
-    for record in deps.storage.read("alerts"):
-        try:
-            alerts.append(Alert(**record))
-        except Exception:
-            continue
-    return alerts
+    return load_alerts()
 
 
 def _sort_transactions(transactions: list[TransactionSession]) -> list[TransactionSession]:
-    return sorted(
-        transactions,
-        key=lambda txn: _parse_dt(txn.committed_at or txn.started_at or txn.last_event_at) or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
-    )
+    return sort_transactions(transactions)
 
 
 def _sort_alerts(alerts: list[Alert]) -> list[Alert]:
-    return sorted(alerts, key=lambda alert: _parse_dt(alert.timestamp) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return sort_alerts(alerts)
 
 
 def _find_transaction(txn_id: str) -> TransactionSession | None:
@@ -120,6 +125,141 @@ def _update_alerts_for_transaction(transaction_id: str, updates: dict) -> list[A
 
 def _missing_pos_seconds() -> int:
     return int(deps.config.rules.get("missing_pos_seconds", 30))
+
+
+def _extract_transaction_clip(txn: TransactionSession) -> str:
+    if not deps.video_manager or not txn.camera_id:
+        return ""
+    start_ts = _parse_dt(txn.started_at)
+    end_ts = txn.committed_at if isinstance(txn.committed_at, datetime) else _parse_dt(str(txn.committed_at or ""))
+    if not start_ts or not end_ts:
+        return ""
+    return deps.video_manager.extract_clip(
+        camera_id=txn.camera_id,
+        clip_id=txn.id,
+        start_ts=start_ts - timedelta(seconds=30),
+        end_ts=end_ts + timedelta(seconds=30),
+    )
+
+
+def _latest_transaction_timestamp() -> datetime | None:
+    latest: datetime | None = None
+    for txn in _load_transactions():
+        candidate = _parse_dt(txn.committed_at or txn.started_at or txn.last_event_at)
+        if candidate is None:
+            continue
+        if candidate.tzinfo is None:
+            candidate = candidate.replace(tzinfo=timezone.utc)
+        if latest is None or candidate > latest:
+            latest = candidate
+    return latest
+
+
+async def _ingest_polled_bills(bills: list[dict], *, mode: str) -> dict:
+    fetched_bills = len(bills)
+    new_transactions = 0
+    new_alerts = 0
+
+    existing_transactions = _load_transactions()
+    existing_bill_numbers = {txn.bill_number: txn for txn in existing_transactions if txn.bill_number}
+
+    def _bill_sort_key(bill: dict) -> str:
+        return f"{bill.get('billDate', '')}T{bill.get('billTime', '')}|{bill.get('billSyncTime', '')}|{bill.get('billNo', '')}"
+
+    for bill in sorted(bills, key=_bill_sort_key):
+        txn = map_bill_to_transaction(bill, deps.config)
+        if not txn.bill_number:
+            continue
+
+        existing = existing_bill_numbers.get(txn.bill_number)
+        if existing is not None:
+            continue
+
+        txn = correlate(txn, deps.cv_consumer, deps.config)
+        txn.snippet_path = _extract_transaction_clip(txn)
+
+        alerts = deps.fraud_engine.evaluate(txn)
+        for alert in alerts:
+            alert.store_name = alert.store_name or txn.store_name
+            alert.pos_terminal_no = alert.pos_terminal_no or txn.pos_terminal_no
+            alert.display_pos_label = alert.display_pos_label or txn.display_pos_label
+            alert.camera_id = alert.camera_id or txn.camera_id
+            alert.device_id = alert.device_id or txn.device_id
+            alert.snippet_path = alert.snippet_path or txn.snippet_path
+
+        deps.storage.append("transactions", txn.model_dump())
+        existing_bill_numbers[txn.bill_number] = txn
+        new_transactions += 1
+        await deps.ws_manager.broadcast("NEW_TRANSACTION", serialize_transaction(txn, deps.config))
+
+        for alert in alerts:
+            deps.storage.append("alerts", alert.model_dump())
+            new_alerts += 1
+            await deps.ws_manager.broadcast("NEW_ALERT", serialize_alert(alert, deps.config))
+
+    return {
+        "mode": mode,
+        "fetched_bills": fetched_bills,
+        "new_transactions": new_transactions,
+        "new_alerts": new_alerts,
+    }
+
+
+async def _run_sales_sync(*, days: int | None = None, mode: str = "recent") -> dict:
+    if not sales_poller.configured:
+        sales_sync_state.update(
+            {
+                "configured": False,
+                "last_mode": mode,
+                "last_error": "sales API not configured",
+            }
+        )
+        return {
+            "ok": False,
+            "mode": mode,
+            "configured": False,
+            "message": "sales API not configured",
+            "fetched_bills": 0,
+            "new_transactions": 0,
+            "new_alerts": 0,
+        }
+
+    async with sales_sync_lock:
+        now = datetime.now(timezone.utc)
+        sales_sync_state["configured"] = True
+        sales_sync_state["last_run_at"] = now.isoformat()
+        sales_sync_state["last_mode"] = mode
+        sales_sync_state["last_error"] = ""
+
+        try:
+            if days is not None:
+                latest = _latest_transaction_timestamp()
+                history_floor = now - timedelta(days=days)
+                lookback = timedelta(minutes=max(deps.settings.sales_reconciliation_lookback_minutes, 1))
+                if latest and latest > history_floor:
+                    bills = await sales_poller.fetch_between(max(history_floor, latest - lookback), now)
+                else:
+                    bills = await sales_poller.fetch_historical(days)
+            else:
+                lookback = timedelta(minutes=max(deps.settings.sales_reconciliation_lookback_minutes, 1))
+                latest = _latest_transaction_timestamp()
+                start = (latest - lookback) if latest else (now - lookback)
+                bills = await sales_poller.fetch_between(start, now)
+
+            result = await _ingest_polled_bills(bills, mode=mode)
+            sales_sync_state.update(
+                {
+                    "last_success_at": datetime.now(timezone.utc).isoformat(),
+                    "last_error": "",
+                    "last_fetched_bills": result["fetched_bills"],
+                    "last_new_transactions": result["new_transactions"],
+                    "last_new_alerts": result["new_alerts"],
+                }
+            )
+            return {"ok": True, "configured": True, **result}
+        except Exception as exc:
+            sales_sync_state["last_error"] = str(exc)
+            raise
 
 
 async def config_watcher():
@@ -236,6 +376,16 @@ async def snippet_cleanup():
         deps.video_manager.cleanup_old_snippets()
 
 
+async def sales_reconciliation_loop():
+    await asyncio.sleep(5)
+    while True:
+        try:
+            await _run_sales_sync(mode="recent")
+        except Exception as exc:
+            print(f"[sales-sync] {exc}")
+        await asyncio.sleep(max(deps.settings.sales_reconciliation_minutes, 1) * 60)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -251,6 +401,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(debug_broadcaster()),
         asyncio.create_task(missing_pos_checker()),
         asyncio.create_task(snippet_cleanup()),
+        asyncio.create_task(sales_reconciliation_loop()),
         asyncio.create_task(deps.cv_consumer.run()),
     ]
     try:
@@ -303,6 +454,8 @@ async def health():
     status = "ok"
     if mapping_issues or not cv_health.get("connected"):
         status = "degraded"
+    if sales_poller.configured and sales_sync_state.get("last_error"):
+        status = "degraded"
 
     return {
         "status": status,
@@ -325,6 +478,19 @@ async def health():
             "snippets_dir": str(DATA_DIR / "snippets"),
             "buffer_dir": str(DATA_DIR / "buffer"),
             "free_gb": round(disk_usage.free / (1024 ** 3), 2),
+        },
+        "sales": {
+            "configured": sales_poller.configured,
+            "api_url": deps.settings.external_sales_url,
+            "reconciliation_minutes": deps.settings.sales_reconciliation_minutes,
+            "lookback_minutes": deps.settings.sales_reconciliation_lookback_minutes,
+            "last_run_at": sales_sync_state.get("last_run_at"),
+            "last_success_at": sales_sync_state.get("last_success_at"),
+            "last_error": sales_sync_state.get("last_error"),
+            "last_mode": sales_sync_state.get("last_mode"),
+            "last_fetched_bills": sales_sync_state.get("last_fetched_bills"),
+            "last_new_transactions": sales_sync_state.get("last_new_transactions"),
+            "last_new_alerts": sales_sync_state.get("last_new_alerts"),
         },
         "services": {
             "redis_url": deps.settings.redis_url,
@@ -476,10 +642,21 @@ async def list_cameras():
 
 @app.get("/api/history")
 async def history(days: int = Query(default=5, ge=1, le=30)):
-    mode = "noop"
-    if deps.settings.external_sales_url and deps.settings.external_sales_header_token:
-        mode = "reconciliation_pending"
-    return {"ok": True, "days": days, "mode": mode}
+    try:
+        result = await _run_sales_sync(days=days, mode="history")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    transactions = _sort_transactions(_load_transactions())
+    serialized = [serialize_transaction(txn, deps.config) for txn in transactions]
+    bills_map = {txn.id: build_bill_data(txn) for txn in transactions}
+    return {
+        **result,
+        "days": days,
+        "count": len(serialized),
+        "transactions": serialized,
+        "bills_map": bills_map,
+    }
 
 
 @app.get("/api/reports/employee-scorecard")
