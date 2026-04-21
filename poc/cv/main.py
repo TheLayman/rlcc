@@ -71,12 +71,15 @@ class CVRuntime:
         self.buffer_root.mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
-        self.states: dict[str, CameraState] = {
-            camera.camera_id: CameraState(camera=camera) for camera in self.config.cameras if camera.enabled
-        }
+        self.states: dict[str, CameraState] = self._build_states()
         self.threads: list[threading.Thread] = []
         self.detector = self._load_detector()
         self.detector_name = self.detector.__class__.__name__ if self.detector is not None else "disabled"
+
+    def _build_states(self) -> dict[str, CameraState]:
+        return {
+            camera.camera_id: CameraState(camera=camera) for camera in self.config.cameras if camera.enabled
+        }
 
     def _load_detector(self):
         if YOLO is None or cv2 is None:
@@ -108,6 +111,15 @@ class CVRuntime:
                 state.recorder.terminate()
         for thread in self.threads:
             thread.join(timeout=1)
+        self.threads = []
+
+    def reload(self):
+        self.stop()
+        self.config.reload()
+        self.stop_event = threading.Event()
+        with self.lock:
+            self.states = self._build_states()
+        self.start()
 
     def cameras(self) -> list[dict]:
         with self.lock:
@@ -412,6 +424,12 @@ async def health():
 @app.get("/cameras")
 async def cameras():
     return runtime.cameras()
+
+
+@app.post("/config/reload")
+async def reload_config():
+    runtime.reload()
+    return {"ok": True, "camera_count": len(runtime.states)}
 
 
 def _stream_generator(camera_id: str):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter
+import httpx
 
 import backend.deps as deps
 
@@ -49,4 +50,21 @@ async def update_camera_mapping(payload: dict):
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(cameras, handle, indent=2)
     deps.config.reload()
-    return {"ok": True}
+
+    cv_reloaded = False
+    cv_reload_error = ""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(f"http://127.0.0.1:{deps.settings.cv_port}/config/reload")
+        cv_reloaded = response.is_success
+        if not response.is_success:
+            cv_reload_error = response.text or f"reload failed with {response.status_code}"
+    except Exception as exc:
+        cv_reload_error = str(exc)
+
+    return {
+        "ok": True,
+        "issues": deps.config.validate_mappings(),
+        "cv_reloaded": cv_reloaded,
+        "cv_reload_error": cv_reload_error,
+    }

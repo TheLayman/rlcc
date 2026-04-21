@@ -14,6 +14,7 @@ import {
   Settings,
   Shield,
   ShieldAlert,
+  Store,
   Users,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -24,6 +25,7 @@ import { AnalyticsView } from '@/app/components/analytics-view';
 import { EmployeeScorecardView } from '@/app/components/employee-scorecard-view';
 import { HeatmapView } from '@/app/components/heatmap-view';
 import { SettingsPanel } from '@/app/components/settings-panel';
+import { StoreConfigView } from '@/app/components/store-config-view';
 import { StreamViewer } from '@/app/components/stream-viewer';
 import { TransactionDetailDrawer } from '@/app/components/transaction-detail-drawer';
 import { TransactionTable } from '@/app/components/transaction-table';
@@ -88,6 +90,7 @@ const NAV_ITEMS = [
   { id: 'scorecard', label: 'Store Scorecard', icon: Users },
   { id: 'heatmap', label: 'Store Overview', icon: MapIcon },
   { id: 'streams', label: 'Stream Viewer', icon: Activity },
+  { id: 'store-config', label: 'Store Config', icon: Store },
   { id: 'settings', label: 'Settings', icon: Settings },
 ] as const;
 
@@ -532,6 +535,7 @@ export function Dashboard() {
           {activeTab === 'scorecard' && <EmployeeScorecardView transactions={timeFilteredTransactions} storeNames={storeNames} />}
           {activeTab === 'heatmap' && <HeatmapView transactions={timeFilteredTransactions} storeNames={storeNames} />}
           {activeTab === 'streams' && <StreamViewer vasData={rawVasData} posData={rawPosData} />}
+          {activeTab === 'store-config' && <StoreConfigView />}
           {activeTab === 'settings' && <SettingsPanel onConfigSaved={reloadAfterConfigChange} />}
         </div>
       </div>

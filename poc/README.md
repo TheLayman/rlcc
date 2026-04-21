@@ -1,6 +1,6 @@
 # RLCC POC
 
-Single-box POC for the 5-store Posifly rollout.
+Single-box POC for the current Posifly rollout.
 
 ## Ports
 
@@ -64,6 +64,19 @@ Stop:
 ./start.sh stop
 ```
 
+## Store Config Workflow
+
+After startup:
+
+- open `http://<server-ip>:5173`
+- go to `Store Config`
+- maintain the store catalog
+- set each camera's `store_id`, `camera_id`, `POS Terminal No`, and `rtsp_url`
+- draw `seller_zone` and `bill_zone` polygons on the live frame
+- click `Save Store Config`
+
+The dashboard saves both `stores.json` and `camera_mapping.json`. Saving also asks the CV service to reload, so updated RTSP URLs and zones apply without a full VM restart.
+
 ## Runtime Paths
 
 - WAL events: `poc/data/events/`
@@ -75,7 +88,8 @@ Stop:
 
 ## Notes
 
-- `camera_mapping.json` includes the 5 POC stores and placeholder RTSP values. Replace `rtsp_url` and zone polygons with live store values before cutover.
+- Use the dashboard Store Config view for RTSP updates and zone drawing. Manual file edits are optional, not required.
+- The seed config includes live POC entries for Ram Ki Bandi, Nizami Daawat, and Krispy Kreme. Some older sample mappings are still present for test coverage. Krispy Kreme currently has no RTSP URL in seed data because none was provided.
 - Saved clips are trimmed around each transaction or missing-POS alert and retained for 2 days.
 - The RLCC CV detector now follows the same default profile as the older `fds-cv` stack: `yolov8m` on GPU, `yolov8s` on CPU. Override with `YOLO_MODEL_PATH` only if you want a different model.
 - If push is not live yet, the dashboard still populates from the sales pull API. Missing-POS alerts stay suppressed until push traffic is actually seen for that store.

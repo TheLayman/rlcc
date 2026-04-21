@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 import backend.deps as deps
 from backend.assembler import TransactionAssembler
-from backend.config import Config
+from backend.config import Config, StoreEntry
 from backend.correlator import correlate
 from backend.cv_consumer import ActivityState, CVConsumer
 from backend.fraud import FraudEngine
@@ -606,6 +606,52 @@ async def list_stores():
         {"cin": store.cin, "name": store.name, "pos_system": store.pos_system, "operator": store.operator}
         for store in deps.config.stores
     ]
+
+
+@app.post("/api/stores")
+async def update_stores(payload: dict):
+    stores = payload.get("stores")
+    if not isinstance(stores, list):
+        return {"ok": False, "message": "Expected `stores` list"}
+
+    normalized: list[StoreEntry] = []
+    seen_cins: set[str] = set()
+    for index, raw in enumerate(stores, start=1):
+        if not isinstance(raw, dict):
+            return {"ok": False, "message": f"Invalid store entry at index {index}"}
+
+        cin = str(raw.get("cin") or "").strip()
+        name = str(raw.get("name") or "").strip()
+        pos_system = str(raw.get("pos_system") or "").strip() or "Posifly-Dino"
+        operator = str(raw.get("operator") or "").strip()
+
+        if not cin:
+            return {"ok": False, "message": f"Store entry {index} is missing `cin`"}
+        if not name:
+            return {"ok": False, "message": f"Store entry {index} is missing `name`"}
+        if cin in seen_cins:
+            return {"ok": False, "message": f"Duplicate store ID `{cin}`"}
+
+        seen_cins.add(cin)
+        normalized.append(
+            StoreEntry(
+                cin=cin,
+                name=name,
+                pos_system=pos_system,
+                operator=operator,
+            )
+        )
+
+    deps.config.stores = normalized
+    deps.config.save_stores()
+    deps.config.reload()
+    return {
+        "ok": True,
+        "stores": [
+            {"cin": store.cin, "name": store.name, "pos_system": store.pos_system, "operator": store.operator}
+            for store in deps.config.stores
+        ],
+    }
 
 
 @app.get("/api/cameras")
