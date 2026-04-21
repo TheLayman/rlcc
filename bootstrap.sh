@@ -120,5 +120,6 @@ echo
 echo "Bootstrap complete."
 echo "Next:"
 echo "  1. cp \"$POC_DIR/.env.example\" \"$POC_DIR/.env\""
-echo "  2. Edit \"$POC_DIR/.env\" and \"$POC_DIR/config/camera_mapping.json\""
+echo "  2. Edit \"$POC_DIR/.env\""
 echo "  3. Run \"$ROOT_DIR/start.sh\""
+echo "  4. Open the dashboard Store Config view to review stores, RTSP URLs, and zones"

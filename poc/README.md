@@ -1,6 +1,6 @@
 # RLCC POC
 
-Single-box POC for the current Posifly rollout.
+Single-box POC for Ram Ki Bandi, Nizami Daawat, KFC, and Haldiram's-AeroPlaza.
 
 ## Ports
 
@@ -15,7 +15,7 @@ Single-box POC for the current Posifly rollout.
 - Path: `/v1/rlcc/launch-event`
 - Example: `http://<server-ip>:8001/v1/rlcc/launch-event`
 - Header: `x-authorization-key: <NUKKAD_PUSH_AUTH_KEY>`
-- Body: stringified JSON payload from Nukkad
+- Body: `application/json`; the receiver accepts both normal JSON and stringified JSON payloads
 
 ## Sales Pull API
 
@@ -70,8 +70,8 @@ After startup:
 
 - open `http://<server-ip>:5173`
 - go to `Store Config`
-- maintain the store catalog
-- set each camera's `store_id`, `camera_id`, `POS Terminal No`, and `rtsp_url`
+- maintain the four-store catalog
+- verify each camera's `store_id`, `camera_id`, `POS Terminal No`, and `rtsp_url`
 - draw `seller_zone` and `bill_zone` polygons on the live frame
 - click `Save Store Config`
 
