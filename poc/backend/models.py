@@ -1,8 +1,10 @@
 from __future__ import annotations
-from pydantic import BaseModel, Field
+
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
-import uuid
+
+from pydantic import BaseModel, Field
 
 
 def utc_now() -> datetime:
@@ -28,20 +30,20 @@ class SaleLine(BaseModel):
     granted_by: str = ""
 
     @classmethod
-    def from_nukkad(cls, p: dict) -> SaleLine:
+    def from_nukkad(cls, payload: dict) -> SaleLine:
         return cls(
-            line_timestamp=p.get("lineTimeStamp"),
-            line_number=p.get("lineNumber", 0),
-            item_id=p.get("itemID", ""),
-            item_description=p.get("itemDescription", ""),
-            item_quantity=p.get("itemQuantity", 0),
-            item_unit_price=p.get("itemUnitPrice", 0.0),
-            total_amount=p.get("totalAmount", 0.0),
-            scan_attribute=p.get("scanAttribute", "None"),
-            item_attribute=p.get("itemAttribute", "None"),
-            discount_type=p.get("discountType", "NoLineDiscount"),
-            discount=p.get("discount", 0.0),
-            granted_by=p.get("grantedBy", ""),
+            line_timestamp=payload.get("lineTimeStamp"),
+            line_number=payload.get("lineNumber", 0),
+            item_id=payload.get("itemID", ""),
+            item_description=payload.get("itemDescription", ""),
+            item_quantity=int(payload.get("itemQuantity", 0) or 0),
+            item_unit_price=float(payload.get("itemUnitPrice", 0.0) or 0.0),
+            total_amount=float(payload.get("totalAmount", 0.0) or 0.0),
+            scan_attribute=payload.get("scanAttribute", "None"),
+            item_attribute=payload.get("itemAttribute", "None"),
+            discount_type=payload.get("discountType", "NoLineDiscount"),
+            discount=float(payload.get("discount", 0.0) or 0.0),
+            granted_by=payload.get("grantedBy", ""),
         )
 
 
@@ -53,31 +55,39 @@ class PaymentLine(BaseModel):
     amount: float = 0.0
     card_type: str = ""
     payment_type_id: str = ""
+    approval_code: str = ""
+    card_number: str = ""
 
     @classmethod
-    def from_nukkad(cls, p: dict) -> PaymentLine:
+    def from_nukkad(cls, payload: dict) -> PaymentLine:
         return cls(
-            line_timestamp=p.get("lineTimeStamp"),
-            line_number=p.get("lineNumber", 0),
-            line_attribute=p.get("lineAttribute", "None"),
-            payment_description=p.get("paymentDescription", ""),
-            amount=p.get("amount", 0.0),
-            card_type=p.get("cardType", ""),
-            payment_type_id=p.get("paymentTypeID", ""),
+            line_timestamp=payload.get("lineTimeStamp"),
+            line_number=payload.get("lineNumber", 0),
+            line_attribute=payload.get("lineAttribute", "None"),
+            payment_description=payload.get("paymentDescription", ""),
+            amount=float(payload.get("amount", 0.0) or 0.0),
+            card_type=payload.get("cardType", ""),
+            payment_type_id=payload.get("paymentTypeID", ""),
+            approval_code=payload.get("approvalCode", ""),
+            card_number=payload.get("cardNo", ""),
         )
 
 
 class TotalLine(BaseModel):
+    line_timestamp: Optional[str] = None
+    line_number: int = 0
     line_attribute: str = ""
     description: str = ""
     amount: float = 0.0
 
     @classmethod
-    def from_nukkad(cls, p: dict) -> TotalLine:
+    def from_nukkad(cls, payload: dict) -> TotalLine:
         return cls(
-            line_attribute=p.get("lineAttribute", ""),
-            description=p.get("totalDescription", ""),
-            amount=p.get("amount", 0.0),
+            line_timestamp=payload.get("lineTimeStamp"),
+            line_number=payload.get("lineNumber", 0),
+            line_attribute=payload.get("lineAttribute", ""),
+            description=payload.get("totalDescription", ""),
+            amount=float(payload.get("amount", 0.0) or 0.0),
         )
 
 
@@ -87,27 +97,33 @@ class TransactionEvent(BaseModel):
     event_description: str = ""
 
     @classmethod
-    def from_nukkad(cls, p: dict) -> TransactionEvent:
+    def from_nukkad(cls, payload: dict) -> TransactionEvent:
         return cls(
-            line_timestamp=p.get("lineTimeStamp"),
-            line_attribute=p.get("lineAttribute", ""),
-            event_description=p.get("eventDescription", ""),
+            line_timestamp=payload.get("lineTimeStamp"),
+            line_attribute=payload.get("lineAttribute", ""),
+            event_description=payload.get("eventDescription", ""),
         )
 
 
 class TransactionSession(BaseModel):
     id: str
     store_id: str
-    pos_terminal: str = ""
+    store_name: str = ""
+    pos_terminal_no: str = ""
+    display_pos_label: str = ""
+    seller_window_id: str = ""
     cashier_id: str = ""
+    debitor: str = ""
     transaction_type: str = "CompletedNormally"
     employee_purchase: bool = False
     outside_opening_hours: str = "InsideOpeningHours"
     source: str = "push_assembled"
     status: str = "open"
     started_at: Optional[str] = None
+    last_event_at: Optional[str] = None
     committed_at: Optional[datetime] = None
     bill_number: str = ""
+    transaction_number: str = ""
     is_previous_transaction: bool = False
     linked_transaction_id: str = ""
     items: list[SaleLine] = Field(default_factory=list)
@@ -123,13 +139,20 @@ class TransactionSession(BaseModel):
     camera_id: str = ""
     device_id: str = ""
     snippet_path: str = ""
+    notes: str = ""
+
+    @property
+    def pos_terminal(self) -> str:
+        return self.pos_terminal_no or self.display_pos_label
 
 
 class Alert(BaseModel):
     id: str = Field(default_factory=lambda: gen_id("ALT"))
     transaction_id: str = ""
     store_id: str = ""
-    pos_zone: str = ""
+    store_name: str = ""
+    pos_terminal_no: str = ""
+    display_pos_label: str = ""
     cashier_id: str = ""
     risk_level: str = "Medium"
     triggered_rules: list[str] = Field(default_factory=list)
@@ -142,11 +165,18 @@ class Alert(BaseModel):
     cv_window_start: Optional[datetime] = None
     cv_window_end: Optional[datetime] = None
     device_id: str = ""
+    snippet_path: str = ""
+    source: str = "rule"
+
+    @property
+    def pos_zone(self) -> str:
+        return self.display_pos_label or self.pos_terminal_no
 
 
 class CVWindow(BaseModel):
     pos_zone: str
     camera_id: str
+    store_id: str = ""
     window_start: datetime
     window_end: datetime
     seller_present_pct: float = 0.0

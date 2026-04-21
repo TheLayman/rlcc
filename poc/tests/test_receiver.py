@@ -36,7 +36,7 @@ async def test_full_transaction_flow():
         stringified = json.dumps(json.dumps(payload))
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             return await client.post("/v1/rlcc/launch-event", content=stringified,
-                                      headers={"Content-Type": "application/json"})
+                                      headers={"Content-Type": "application/json", "x-authorization-key": "test"})
 
     # Begin
     await send({"event": "BeginTransactionWithTillLookup", "storeIdentifier": "NDCIN1223",
@@ -65,7 +65,7 @@ async def test_full_transaction_flow():
     # Verify transaction was persisted
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/transactions")
-    txns = resp.json()
+    txns = resp.json()["transactions"]
     matching = [t for t in txns if t.get("id") == session_id]
     assert len(matching) == 1
     assert matching[0]["bill_number"] == "BILL-TEST-001"
@@ -77,7 +77,7 @@ async def test_invalid_json():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post("/v1/rlcc/launch-event", content="not json",
-                                  headers={"Content-Type": "application/json"})
+                                  headers={"Content-Type": "application/json", "x-authorization-key": "test"})
     assert resp.status_code == 400
 
 

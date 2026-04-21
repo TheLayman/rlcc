@@ -7,6 +7,8 @@ from backend.assembler import TransactionAssembler
 from backend.fraud import FraudEngine
 from backend.cv_consumer import CVConsumer
 from backend.ws import ConnectionManager
+from backend.settings import Settings
+from backend.video import VideoManager
 
 config: Config = None
 storage: Storage = None
@@ -14,3 +16,5 @@ assembler: TransactionAssembler = None
 fraud_engine: FraudEngine = None
 cv_consumer: CVConsumer = None
 ws_manager: ConnectionManager = None
+settings: Settings = None
+video_manager: VideoManager = None

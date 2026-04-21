@@ -1,50 +1,130 @@
+from __future__ import annotations
+
 import json
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+
 import backend.deps as deps
-from backend.models import Alert
+from backend.correlator import correlate
+from backend.models import Alert, TransactionSession
+from backend.serializers import serialize_alert, serialize_transaction
 
 router = APIRouter()
 
 
+def _parse_payload(raw_body: bytes) -> tuple[dict | None, str | None]:
+    try:
+        body_text = raw_body.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, "Invalid request body"
+
+    try:
+        parsed = json.loads(body_text)
+    except json.JSONDecodeError:
+        return None, "Invalid JSON"
+
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except json.JSONDecodeError:
+            return None, "Invalid stringified JSON"
+
+    if not isinstance(parsed, dict):
+        return None, "Payload must be a JSON object"
+
+    return parsed, None
+
+
+def _parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _camera_for(store_id: str, pos_terminal_no: str):
+    return deps.config.get_camera_by_terminal(store_id, pos_terminal_no)
+
+
+def _hydrate_transaction(txn: TransactionSession) -> TransactionSession:
+    txn.store_name = txn.store_name or deps.config.get_store_name(txn.store_id)
+    camera = _camera_for(txn.store_id, txn.pos_terminal_no)
+    if camera:
+        txn.display_pos_label = camera.display_pos_label
+        txn.camera_id = txn.camera_id or camera.camera_id
+        txn.device_id = txn.device_id or camera.xprotect_device_id
+        txn.seller_window_id = txn.seller_window_id or camera.seller_window_key
+    return txn
+
+
+def _extract_transaction_clip(txn: TransactionSession) -> str:
+    if not deps.video_manager or not txn.camera_id:
+        return ""
+    start_ts = _parse_ts(txn.started_at)
+    end_ts = txn.committed_at if isinstance(txn.committed_at, datetime) else _parse_ts(str(txn.committed_at or ""))
+    if not start_ts or not end_ts:
+        return ""
+    return deps.video_manager.extract_clip(
+        camera_id=txn.camera_id,
+        clip_id=txn.id,
+        start_ts=start_ts - timedelta(seconds=30),
+        end_ts=end_ts + timedelta(seconds=30),
+    )
+
+
+def _extract_event_clip(*, clip_id: str, store_id: str, pos_terminal_no: str, at: datetime | None) -> tuple[str, str]:
+    camera = _camera_for(store_id, pos_terminal_no)
+    if not camera or not deps.video_manager or not at:
+        return "", camera.camera_id if camera else ""
+    return (
+        deps.video_manager.extract_clip(
+            camera_id=camera.camera_id,
+            clip_id=clip_id,
+            start_ts=at - timedelta(seconds=30),
+            end_ts=at + timedelta(seconds=30),
+        ),
+        camera.camera_id,
+    )
+
+
+async def _broadcast_raw_pos() -> None:
+    await deps.ws_manager.broadcast("RAW_POS_DATA", deps.storage.get_recent_pos_events())
+
+
 @router.post("/v1/rlcc/launch-event")
 async def receive_event(request: Request):
+    expected_key = deps.settings.push_auth_key
+    provided_key = request.headers.get("x-authorization-key", "")
+    if expected_key and provided_key != expected_key:
+        return JSONResponse(status_code=401, content={"message": "Unauthorized"})
 
-    # Parse body — handle both stringified and normal JSON
-    try:
-        body = await request.body()
-        body_str = body.decode("utf-8")
-        try:
-            parsed = json.loads(body_str)
-            if isinstance(parsed, str):
-                payload = json.loads(parsed)
-            else:
-                payload = parsed
-        except (json.JSONDecodeError, TypeError):
-            return JSONResponse(status_code=400, content={"message": "Invalid JSON"})
-    except Exception:
-        return JSONResponse(status_code=400, content={"message": "Invalid request body"})
+    payload, error = _parse_payload(await request.body())
+    if error:
+        return JSONResponse(status_code=400, content={"message": error})
 
-    event_type = payload.get("event", "")
-
-    # WAL — persist raw event immediately
     deps.storage.append_event(payload)
 
-    # Dedup
     if deps.storage.is_duplicate(payload):
+        await _broadcast_raw_pos()
         return {"status": 200, "message": "duplicate, ignored"}
     deps.storage.mark_seen(payload)
 
-    # Track Nukkad activity for feed-down detection
+    event_type = payload.get("event", "")
     store_id = payload.get("storeIdentifier", "")
+    pos_terminal_no = payload.get("posTerminalNo", "")
+    cashier_id = payload.get("cashier", "")
+
     if store_id:
         deps.fraud_engine.record_nukkad_event(store_id)
 
-    # Route by event type
     if event_type == "BeginTransactionWithTillLookup":
         deps.assembler.begin(payload)
 
-    elif event_type in ("AddTransactionSaleLine", "AddTransactionSaleLineWithTillLookup"):
+    elif event_type in {"AddTransactionSaleLine", "AddTransactionSaleLineWithTillLookup"}:
         deps.assembler.add_sale_line(payload)
 
     elif event_type == "AddTransactionPaymentLine":
@@ -56,36 +136,57 @@ async def receive_event(request: Request):
     elif event_type == "AddTransactionEvent":
         deps.assembler.add_event(payload)
 
+    elif event_type == "GetTill":
+        await _broadcast_raw_pos()
+        return {"status": 200, "message": "GetTill acknowledged"}
+
     elif event_type == "CommitTransaction":
         txn = deps.assembler.commit(payload)
         if txn:
-            from backend.correlator import correlate
+            txn = _hydrate_transaction(txn)
             txn = correlate(txn, deps.cv_consumer, deps.config)
-            # Run fraud rules
+            txn.snippet_path = _extract_transaction_clip(txn)
+
             alerts = deps.fraud_engine.evaluate(txn)
+            for alert in alerts:
+                alert.store_name = alert.store_name or txn.store_name
+                alert.pos_terminal_no = alert.pos_terminal_no or txn.pos_terminal_no
+                alert.display_pos_label = alert.display_pos_label or txn.display_pos_label
+                alert.camera_id = alert.camera_id or txn.camera_id
+                alert.device_id = alert.device_id or txn.device_id
+                alert.snippet_path = alert.snippet_path or txn.snippet_path
 
-            # Persist transaction
             deps.storage.append("transactions", txn.model_dump())
-            await deps.ws_manager.broadcast("NEW_TRANSACTION", {
-                "id": txn.id, "store_id": txn.store_id,
-                "risk_level": txn.risk_level, "triggered_rules": txn.triggered_rules
-            })
+            await deps.ws_manager.broadcast("NEW_TRANSACTION", serialize_transaction(txn, deps.config))
 
-            # Persist and broadcast alerts
             for alert in alerts:
                 deps.storage.append("alerts", alert.model_dump())
-                await deps.ws_manager.broadcast("NEW_ALERT", alert.model_dump())
+                await deps.ws_manager.broadcast("NEW_ALERT", serialize_alert(alert, deps.config))
 
     elif event_type == "BillReprint":
+        event_ts = _parse_ts(payload.get("transactionTimeStamp"))
+        clip_path, camera_id = _extract_event_clip(
+            clip_id=f"bill-reprint-{payload.get('transactionNumber', 'unknown')}",
+            store_id=store_id,
+            pos_terminal_no=pos_terminal_no,
+            at=event_ts,
+        )
         alert = Alert(
-            transaction_id="",
-            store_id=payload.get("storeIdentifier", ""),
-            pos_zone=payload.get("posTerminalNo", ""),
-            cashier_id=payload.get("cashier", ""),
+            transaction_id=payload.get("transactionNumber", ""),
+            store_id=store_id,
+            store_name=deps.config.get_store_name(store_id),
+            pos_terminal_no=pos_terminal_no,
+            display_pos_label=pos_terminal_no,
+            cashier_id=cashier_id,
             risk_level="Medium",
             triggered_rules=["13_bill_reprint"],
+            timestamp=event_ts or datetime.now(timezone.utc),
+            camera_id=camera_id,
+            snippet_path=clip_path,
+            source="bill_reprint",
         )
         deps.storage.append("alerts", alert.model_dump())
-        await deps.ws_manager.broadcast("NEW_ALERT", alert.model_dump())
+        await deps.ws_manager.broadcast("NEW_ALERT", serialize_alert(alert, deps.config))
 
-    return {"status": 200, "message": "Success"}
+    await _broadcast_raw_pos()
+    return {"status": 200, "message": "Success", "event": event_type}

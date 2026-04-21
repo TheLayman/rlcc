@@ -24,9 +24,15 @@ _RULE_SEVERITY: dict[str, str] = {
 }
 
 
+_TOTAL_ALIASES: dict[str, tuple[str, ...]] = {
+    "TotalAmountToBePaid": ("TotalAmountToBePaid", "GrandTotal", "Total"),
+}
+
+
 def _get_total(txn: TransactionSession, attribute: str) -> Optional[float]:
+    aliases = _TOTAL_ALIASES.get(attribute, (attribute,))
     for t in txn.totals:
-        if t.line_attribute == attribute:
+        if t.line_attribute in aliases:
             return t.amount
     return None
 
@@ -281,12 +287,17 @@ class FraudEngine:
             alert = Alert(
                 transaction_id=txn.id,
                 store_id=txn.store_id,
+                store_name=txn.store_name,
+                pos_terminal_no=txn.pos_terminal_no,
+                display_pos_label=txn.display_pos_label,
                 pos_zone=txn.pos_terminal,
                 cashier_id=txn.cashier_id,
                 risk_level=txn.risk_level,
                 triggered_rules=list(txn.triggered_rules),
                 camera_id=txn.camera_id,
                 device_id=txn.device_id,
+                snippet_path=txn.snippet_path,
+                source="rule",
             )
             alerts.append(alert)
 

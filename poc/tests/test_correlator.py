@@ -27,7 +27,8 @@ def _make_config_with_camera(seller_window_id, camera_id, pos_zone, multi_pos=Fa
     config.cameras = [
         CameraEntry(
             seller_window_id=seller_window_id, store_id=seller_window_id.split("_")[0],
-            pos_terminal=seller_window_id.split("_")[1] if "_" in seller_window_id else "",
+            pos_terminal_no=seller_window_id.split("_")[1] if "_" in seller_window_id else "",
+            display_pos_label=seller_window_id.split("_")[1] if "_" in seller_window_id else "",
             camera_id=camera_id, rtsp_url="", xprotect_device_id="",
             multi_pos=multi_pos,
             pos_zones=[PosZoneConfig(zone_id=pos_zone, seller_zone=[], bill_zone=[])],
@@ -40,7 +41,7 @@ def test_correlate_with_cv_data():
     cv, now = _make_cv_consumer_with_window("POS3", "cam-rambandi-01")
     config = _make_config_with_camera("NDCIN1223_POS 3", "cam-rambandi-01", "POS3")
     txn = TransactionSession(
-        id="TXN-001", store_id="NDCIN1223", pos_terminal="POS 3",
+        id="TXN-001", store_id="NDCIN1223", pos_terminal_no="POS 3",
         source="push_assembled",
         started_at=(now - timedelta(seconds=25)).isoformat(),
         committed_at=now,
@@ -55,7 +56,7 @@ def test_correlate_no_camera():
     cv, now = _make_cv_consumer_with_window("POS3", "cam-01")
     config = Config.__new__(Config)
     config.cameras = []
-    txn = TransactionSession(id="TXN-002", store_id="UNKNOWN", pos_terminal="POS 1", source="push_assembled")
+    txn = TransactionSession(id="TXN-002", store_id="UNKNOWN", pos_terminal_no="POS 1", source="push_assembled")
     result = correlate(txn, cv, config)
     assert result.cv_confidence == "UNMAPPED"
 
@@ -64,7 +65,7 @@ def test_correlate_multi_pos():
     cv, now = _make_cv_consumer_with_window("POS3", "cam-01")
     config = _make_config_with_camera("STORE_POS 3", "cam-01", "POS3", multi_pos=True)
     txn = TransactionSession(
-        id="TXN-003", store_id="STORE", pos_terminal="POS 3",
+        id="TXN-003", store_id="STORE", pos_terminal_no="POS 3",
         source="push_assembled",
         started_at=(now - timedelta(seconds=25)).isoformat(),
         committed_at=now,

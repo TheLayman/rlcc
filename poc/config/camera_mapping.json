@@ -1,18 +1,100 @@
 [
   {
-    "seller_window_id": "NDCIN1223_POS 3",
+    "seller_window_id": "NDCIN1223_POS3",
     "store_id": "NDCIN1223",
-    "pos_terminal": "POS 3",
+    "pos_terminal_no": "POS 3",
+    "display_pos_label": "POS 3",
     "camera_id": "cam-rambandi-01",
     "rtsp_url": "",
     "xprotect_device_id": "",
     "multi_pos": false,
+    "enabled": true,
     "zones": {
       "pos_zones": [
         {
           "zone_id": "POS3",
-          "seller_zone": [[431,568], [861,550], [872,720], [420,720]],
-          "bill_zone": [[710,375], [850,370], [855,440], [715,445]]
+          "seller_zone": [[430, 540], [860, 540], [860, 715], [430, 715]],
+          "bill_zone": [[720, 360], [860, 360], [860, 445], [720, 445]]
+        }
+      ]
+    }
+  },
+  {
+    "seller_window_id": "NSCIN8227_POS4",
+    "store_id": "NSCIN8227",
+    "pos_terminal_no": "POS4",
+    "display_pos_label": "POS4",
+    "camera_id": "cam-encalm-01",
+    "rtsp_url": "",
+    "xprotect_device_id": "",
+    "multi_pos": false,
+    "enabled": true,
+    "zones": {
+      "pos_zones": [
+        {
+          "zone_id": "POS4",
+          "seller_zone": [[405, 530], [845, 530], [845, 710], [405, 710]],
+          "bill_zone": [[710, 340], [860, 340], [860, 430], [710, 430]]
+        }
+      ]
+    }
+  },
+  {
+    "seller_window_id": "NDCIN1227_POS1",
+    "store_id": "NDCIN1227",
+    "pos_terminal_no": "POS 1",
+    "display_pos_label": "POS 1",
+    "camera_id": "cam-kfc-01",
+    "rtsp_url": "",
+    "xprotect_device_id": "",
+    "multi_pos": false,
+    "enabled": true,
+    "zones": {
+      "pos_zones": [
+        {
+          "zone_id": "POS1",
+          "seller_zone": [[420, 525], [850, 525], [850, 710], [420, 710]],
+          "bill_zone": [[700, 350], [850, 350], [850, 435], [700, 435]]
+        }
+      ]
+    }
+  },
+  {
+    "seller_window_id": "NDCIN1226_POS2",
+    "store_id": "NDCIN1226",
+    "pos_terminal_no": "POS 2",
+    "display_pos_label": "POS 2",
+    "camera_id": "cam-pizzahut-01",
+    "rtsp_url": "",
+    "xprotect_device_id": "",
+    "multi_pos": false,
+    "enabled": true,
+    "zones": {
+      "pos_zones": [
+        {
+          "zone_id": "POS2",
+          "seller_zone": [[440, 520], [870, 520], [870, 710], [440, 710]],
+          "bill_zone": [[710, 350], [855, 350], [855, 435], [710, 435]]
+        }
+      ]
+    }
+  },
+  {
+    "seller_window_id": "NDCIN1228_POS1",
+    "store_id": "NDCIN1228",
+    "pos_terminal_no": "POS 1",
+    "display_pos_label": "POS 1",
+    "camera_id": "cam-haldirams-01",
+    "rtsp_url": "",
+    "xprotect_device_id": "",
+    "multi_pos": false,
+    "enabled": true,
+    "zones": {
+      "pos_zones": [
+        {
+          "zone_id": "POS1",
+          "seller_zone": [[430, 535], [860, 535], [860, 710], [430, 710]],
+          "bill_zone": [[715, 350], [860, 350], [860, 440], [715, 440]]
         }
       ]
     }

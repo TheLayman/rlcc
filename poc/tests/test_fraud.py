@@ -9,7 +9,7 @@ def _make_config():
 
 
 def _make_txn(**kwargs) -> TransactionSession:
-    defaults = {"id": "TXN-001", "store_id": "NDCIN1223", "pos_terminal": "POS 3", "source": "push_assembled", "status": "committed"}
+    defaults = {"id": "TXN-001", "store_id": "NDCIN1223", "pos_terminal_no": "POS 3", "source": "push_assembled", "status": "committed"}
     defaults.update(kwargs)
     return TransactionSession(**defaults)
 

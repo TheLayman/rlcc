@@ -44,7 +44,7 @@ def test_transaction_session_defaults():
     txn = TransactionSession(
         id="sess-001",
         store_id="NDCIN1223",
-        pos_terminal="POS 3",
+        pos_terminal_no="POS 3",
         source="push_assembled",
     )
     assert txn.status == "open"
