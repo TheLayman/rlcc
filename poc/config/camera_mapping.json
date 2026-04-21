@@ -40,52 +40,12 @@
     }
   },
   {
-    "seller_window_id": "NDCIN2082_POS1",
-    "store_id": "NDCIN2082",
-    "pos_terminal_no": "POS 1",
-    "display_pos_label": "POS 1",
-    "camera_id": "cam-krispykreme-01",
-    "rtsp_url": "",
-    "xprotect_device_id": "",
-    "multi_pos": false,
-    "enabled": true,
-    "zones": {
-      "pos_zones": [
-        {
-          "zone_id": "POS1",
-          "seller_zone": [],
-          "bill_zone": []
-        }
-      ]
-    }
-  },
-  {
-    "seller_window_id": "NSCIN8227_POS4",
-    "store_id": "NSCIN8227",
-    "pos_terminal_no": "POS4",
-    "display_pos_label": "POS4",
-    "camera_id": "cam-encalm-01",
-    "rtsp_url": "",
-    "xprotect_device_id": "",
-    "multi_pos": false,
-    "enabled": true,
-    "zones": {
-      "pos_zones": [
-        {
-          "zone_id": "POS4",
-          "seller_zone": [[405, 530], [845, 530], [845, 710], [405, 710]],
-          "bill_zone": [[710, 340], [860, 340], [860, 430], [710, 430]]
-        }
-      ]
-    }
-  },
-  {
     "seller_window_id": "NDCIN1227_POS1",
     "store_id": "NDCIN1227",
     "pos_terminal_no": "POS 1",
     "display_pos_label": "POS 1",
     "camera_id": "cam-kfc-01",
-    "rtsp_url": "",
+    "rtsp_url": "rtsp://kspoc:kspoc123@10.86.158.21:554/videoStreamId=3",
     "xprotect_device_id": "",
     "multi_pos": false,
     "enabled": true,
@@ -100,32 +60,12 @@
     }
   },
   {
-    "seller_window_id": "NDCIN1226_POS2",
-    "store_id": "NDCIN1226",
-    "pos_terminal_no": "POS 2",
-    "display_pos_label": "POS 2",
-    "camera_id": "cam-pizzahut-01",
-    "rtsp_url": "",
-    "xprotect_device_id": "",
-    "multi_pos": false,
-    "enabled": true,
-    "zones": {
-      "pos_zones": [
-        {
-          "zone_id": "POS2",
-          "seller_zone": [[440, 520], [870, 520], [870, 710], [440, 710]],
-          "bill_zone": [[710, 350], [855, 350], [855, 435], [710, 435]]
-        }
-      ]
-    }
-  },
-  {
     "seller_window_id": "NDCIN1228_POS1",
     "store_id": "NDCIN1228",
     "pos_terminal_no": "POS 1",
     "display_pos_label": "POS 1",
     "camera_id": "cam-haldirams-01",
-    "rtsp_url": "",
+    "rtsp_url": "rtsp://kspoc:kspoc123@10.86.158.26:554/videoStreamId=3",
     "xprotect_device_id": "",
     "multi_pos": false,
     "enabled": true,

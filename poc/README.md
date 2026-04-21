@@ -89,7 +89,7 @@ The dashboard saves both `stores.json` and `camera_mapping.json`. Saving also as
 ## Notes
 
 - Use the dashboard Store Config view for RTSP updates and zone drawing. Manual file edits are optional, not required.
-- The seed config includes live POC entries for Ram Ki Bandi, Nizami Daawat, and Krispy Kreme. Some older sample mappings are still present for test coverage. Krispy Kreme currently has no RTSP URL in seed data because none was provided.
+- The seed config is trimmed to Ram Ki Bandi, Nizami Daawat, KFC, and Haldiram's-AeroPlaza.
 - Saved clips are trimmed around each transaction or missing-POS alert and retained for 2 days.
 - The RLCC CV detector now follows the same default profile as the older `fds-cv` stack: `yolov8m` on GPU, `yolov8s` on CPU. Override with `YOLO_MODEL_PATH` only if you want a different model.
 - If push is not live yet, the dashboard still populates from the sales pull API. Missing-POS alerts stay suppressed until push traffic is actually seen for that store.

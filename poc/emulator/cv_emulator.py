@@ -14,9 +14,8 @@ import redis
 
 CAMERAS = [
     {"store_id": "NDCIN1223", "camera_id": "cam-rambandi-01", "zones": [{"pos_zone": "POS3"}]},
-    {"store_id": "NSCIN8227", "camera_id": "cam-encalm-01", "zones": [{"pos_zone": "POS4"}]},
+    {"store_id": "NDCIN1231", "camera_id": "cam-nizami-01", "zones": [{"pos_zone": "POS1"}]},
     {"store_id": "NDCIN1227", "camera_id": "cam-kfc-01", "zones": [{"pos_zone": "POS1"}]},
-    {"store_id": "NDCIN1226", "camera_id": "cam-pizzahut-01", "zones": [{"pos_zone": "POS2"}]},
     {"store_id": "NDCIN1228", "camera_id": "cam-haldirams-01", "zones": [{"pos_zone": "POS1"}]},
 ]
 

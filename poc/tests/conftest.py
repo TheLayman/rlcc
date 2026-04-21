@@ -12,7 +12,7 @@ TEST_SESSION_IDS = {
 
 TEST_LINE_MARKERS = {
     "TEST/PULL/",
-    "POLL-NSCIN8227-TEST-PULL",
+    "POLL-NDCIN1227-TEST-PULL",
     "push-existing-001",
 }
 

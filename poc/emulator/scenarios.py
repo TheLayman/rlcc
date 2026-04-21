@@ -18,9 +18,8 @@ PAY_MODES = [("Cash", 0.4), ("CreditCard", 0.3), ("UPI", 0.2), ("Phonepe", 0.1)]
 
 STORES = [
     {"cin": "NDCIN1223", "terminal": "POS 3"},
-    {"cin": "NSCIN8227", "terminal": "POS4"},
+    {"cin": "NDCIN1231", "terminal": "POS 1"},
     {"cin": "NDCIN1227", "terminal": "POS 1"},
-    {"cin": "NDCIN1226", "terminal": "POS 2"},
     {"cin": "NDCIN1228", "terminal": "POS 1"},
 ]
 
