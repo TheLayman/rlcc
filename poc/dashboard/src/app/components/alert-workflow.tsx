@@ -21,9 +21,10 @@ interface AlertWorkflowProps {
   alerts: Alert[];
   setAlerts: React.Dispatch<React.SetStateAction<Alert[]>>;
   transactions: Transaction[];
+  onOpenTransaction?: (alert: Alert) => void;
 }
 
-export function AlertWorkflow({ alerts, setAlerts, transactions }: AlertWorkflowProps) {
+export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransaction }: AlertWorkflowProps) {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
   const [remarks, setRemarks] = useState('');
@@ -177,21 +178,12 @@ export function AlertWorkflow({ alerts, setAlerts, transactions }: AlertWorkflow
                       <Button
                         variant="outline"
                         size="sm"
-                        disabled={!clipUrl}
-                        asChild={Boolean(clipUrl)}
+                        disabled={!clipUrl || !onOpenTransaction}
+                        onClick={() => onOpenTransaction?.(alert)}
                         className={`gap-1 border-gray-200 text-xs ${clipUrl ? 'text-blue-600 hover:bg-blue-50' : 'text-gray-400 cursor-not-allowed'}`}
                       >
-                        {clipUrl ? (
-                          <a href={clipUrl!} target="_blank" rel="noreferrer">
-                            <Video className="h-3 w-3" />
-                            Footage
-                          </a>
-                        ) : (
-                          <span>
-                            <Video className="h-3 w-3 inline-block mr-1" />
-                            Footage
-                          </span>
-                        )}
+                        <Video className="h-3 w-3" />
+                        Footage
                       </Button>
                       {['new', 'Fraudulent', 'Pending for review', 'reviewing'].includes(alert.status) && (
                         <Button

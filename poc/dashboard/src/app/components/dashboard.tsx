@@ -16,6 +16,7 @@ import {
   ShieldAlert,
   Store,
   Users,
+  Video,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -29,6 +30,7 @@ import { StoreConfigView } from '@/app/components/store-config-view';
 import { StreamViewer } from '@/app/components/stream-viewer';
 import { TransactionDetailDrawer } from '@/app/components/transaction-detail-drawer';
 import { TransactionTable } from '@/app/components/transaction-table';
+import { VideoReviewView } from '@/app/components/video-review-view';
 import { Badge } from '@/app/components/ui/badge';
 import { Button } from '@/app/components/ui/button';
 import { Card } from '@/app/components/ui/card';
@@ -86,6 +88,7 @@ const NAV_ITEMS = [
   { id: 'transactions', label: 'Transactions', icon: LayoutDashboard },
   { id: 'analytics', label: 'Analytics', icon: BarChart3 },
   { id: 'alerts', label: 'Alerts', icon: Bell },
+  { id: 'videos', label: 'Videos', icon: Video },
   { id: 'scorecard', label: 'Store Scorecard', icon: Users },
   { id: 'heatmap', label: 'Store Overview', icon: MapIcon },
   { id: 'streams', label: 'Stream Viewer', icon: Activity },
@@ -206,6 +209,54 @@ export function Dashboard() {
   const reloadAfterConfigChange = async () => {
     await loadFromLocal();
     toast.success('Rules saved');
+  };
+
+  const handleOpenTransactionFromAlert = async (alert: Alert) => {
+    if (alert.transaction_id && alert.transaction_id !== 'N/A') {
+      const existing = transactions.find(txn => txn.id === alert.transaction_id);
+      if (existing) {
+        await handleRowClick(existing);
+        return;
+      }
+
+      try {
+        const response = await fetch(`${BACKEND_BASE}/api/transactions/${alert.transaction_id}`);
+        if (response.ok) {
+          const payload = await response.json();
+          const detailed = {
+            ...payload.transaction,
+            shop_name: payload.transaction.shop_name || alert.shop_name || payload.transaction.shop_id,
+            cam_id: payload.transaction.cam_id || alert.cam_id || '',
+            pos_id: payload.transaction.pos_id || alert.pos_id || '',
+            cashier_name: payload.transaction.cashier_name || alert.cashier_name,
+            clip_url: payload.transaction.clip_url || alert.clip_url,
+            timestamp: new Date(payload.transaction.timestamp),
+          };
+          setSelectedTransaction(detailed);
+          setBillsMap(prev => ({ ...prev, [payload.transaction.id]: payload.bill_data || prev[payload.transaction.id] }));
+          setDrawerOpen(true);
+          return;
+        }
+      } catch {
+        // Fall back to alert-backed clip below when the transaction record is not available.
+      }
+    }
+    const synthetic: Transaction = {
+      id: alert.id,
+      shop_id: alert.shop_id,
+      shop_name: alert.shop_name,
+      cam_id: alert.cam_id || '',
+      pos_id: alert.pos_id || '',
+      cashier_name: alert.cashier_name,
+      timestamp: alert.timestamp,
+      transaction_total: 0,
+      risk_level: alert.risk_level,
+      triggered_rules: alert.triggered_rules,
+      status: alert.status,
+      clip_url: alert.clip_url,
+    };
+    setSelectedTransaction(synthetic);
+    setDrawerOpen(true);
   };
 
   const handleRowClick = async (transaction: Transaction) => {
@@ -535,7 +586,8 @@ export function Dashboard() {
           )}
 
           {activeTab === 'analytics' && <AnalyticsView transactions={timeFilteredTransactions} />}
-          {activeTab === 'alerts' && <AlertWorkflow alerts={alerts} setAlerts={setAlerts} transactions={transactions} />}
+          {activeTab === 'alerts' && <AlertWorkflow alerts={alerts} setAlerts={setAlerts} transactions={transactions} onOpenTransaction={handleOpenTransactionFromAlert} />}
+          {activeTab === 'videos' && <VideoReviewView alerts={alerts} transactions={transactions} onOpenAlert={handleOpenTransactionFromAlert} onOpenTransaction={handleRowClick} />}
           {activeTab === 'scorecard' && <EmployeeScorecardView transactions={timeFilteredTransactions} storeNames={storeNames} />}
           {activeTab === 'heatmap' && <HeatmapView transactions={timeFilteredTransactions} storeNames={storeNames} />}
           {activeTab === 'streams' && <StreamViewer vasData={rawVasData} posData={rawPosData} />}
