@@ -145,7 +145,12 @@ def _transaction_bounds(txn: TransactionSession) -> tuple[datetime | None, datet
 
 
 def _clip_path_exists(path_value: str) -> bool:
-    return bool(path_value and Path(path_value).exists())
+    if not path_value:
+        return False
+    if deps.video_manager:
+        return deps.video_manager.clip_exists(path_value)
+    path = Path(path_value)
+    return path.exists() and path.is_file() and path.stat().st_size > 0
 
 
 def _can_recover_clip_from_buffer(txn: TransactionSession) -> bool:

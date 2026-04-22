@@ -241,21 +241,27 @@ class CVRuntime:
             "copy",
             "-f",
             "segment",
+            "-segment_format",
+            "mpegts",
             "-segment_time",
             "60",
+            "-reset_timestamps",
+            "1",
             "-strftime",
             "1",
-            (out_dir / "segment_%Y-%m-%dT%H-%M-%S.mp4").as_posix(),
+            (out_dir / "segment_%Y-%m-%dT%H-%M-%S.ts").as_posix(),
         ]
         try:
-            return subprocess.Popen(cmd)
+            env = dict(os.environ)
+            env["TZ"] = "UTC"
+            return subprocess.Popen(cmd, env=env)
         except Exception:
             return None
 
     def _prune_buffer(self, camera_id: str):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=settings.video_buffer_minutes)
         camera_dir = self.buffer_root / camera_id
-        for segment in camera_dir.glob("segment_*.mp4"):
+        for segment in list(camera_dir.glob("segment_*.ts")) + list(camera_dir.glob("segment_*.mp4")):
             try:
                 stamp = datetime.strptime(segment.stem.replace("segment_", ""), "%Y-%m-%dT%H-%M-%S").replace(tzinfo=timezone.utc)
             except ValueError:

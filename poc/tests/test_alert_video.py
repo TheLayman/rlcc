@@ -28,6 +28,7 @@ async def test_alert_video_falls_back_to_transaction_clip(monkeypatch, tmp_path)
 
     monkeypatch.setattr(main_module, "_find_alert", lambda alert_id: alert if alert_id == "ALT-001" else None)
     monkeypatch.setattr(main_module, "_find_transaction", lambda txn_id: transaction if txn_id == "TXN-001" else None)
+    monkeypatch.setattr(main_module.deps.video_manager, "clip_exists", lambda path: True)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -50,6 +51,7 @@ async def test_transaction_video_is_served_inline(monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr(main_module, "_find_transaction", lambda txn_id: transaction if txn_id == "TXN-002" else None)
+    monkeypatch.setattr(main_module.deps.video_manager, "clip_exists", lambda path: True)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -58,6 +60,29 @@ async def test_transaction_video_is_served_inline(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert response.headers["content-type"] == "video/mp4"
     assert response.headers["content-disposition"] == 'inline; filename="TXN-002.mp4"'
+
+
+@pytest.mark.anyio
+async def test_transaction_video_rejects_invalid_existing_clip(monkeypatch, tmp_path):
+    clip_path = tmp_path / "txn.mp4"
+    clip_path.write_bytes(b"broken-video")
+
+    transaction = TransactionSession(
+        id="TXN-003",
+        store_id="STORE",
+        snippet_path=str(clip_path),
+    )
+
+    monkeypatch.setattr(main_module, "_find_transaction", lambda txn_id: transaction if txn_id == "TXN-003" else None)
+    monkeypatch.setattr(main_module, "_extract_transaction_clip", lambda current: "")
+    monkeypatch.setattr(main_module.deps.video_manager, "clip_exists", lambda path: False)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/transactions/TXN-003/video")
+
+    assert response.status_code == 404
+    assert transaction.snippet_path == ""
 
 
 @pytest.mark.anyio
