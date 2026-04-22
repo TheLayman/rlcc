@@ -54,6 +54,7 @@ function parseDate(value?: string | Date | null): Date | null {
 export function TransactionDetailDrawer({ transaction, billData, open, onClose }: TransactionDetailDrawerProps) {
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
+  const [videoLoadError, setVideoLoadError] = useState('');
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
@@ -72,6 +73,13 @@ export function TransactionDetailDrawer({ transaction, billData, open, onClose }
   const payModes = useMemo(() => transaction?.payments ?? billData?.payModes ?? [], [transaction, billData]);
   const totals = useMemo(() => transaction?.totals ?? Object.entries(billData?.totals ?? {}).map(([line_attribute, amount]) => ({ line_attribute, amount })), [transaction, billData]);
   const clipUrl = transaction?.clip_url ? `${BACKEND_BASE}${transaction.clip_url}` : null;
+
+  useEffect(() => {
+    setVideoLoadError('');
+    if (!open && videoRef.current) {
+      videoRef.current.pause();
+    }
+  }, [clipUrl, open]);
 
   const clipStart = useMemo(() => {
     const startedAt = parseDate(transaction?.started_at);
@@ -275,7 +283,25 @@ export function TransactionDetailDrawer({ transaction, billData, open, onClose }
               )}
             </div>
             {clipUrl ? (
-              <video ref={videoRef} controls className="w-full rounded-lg border border-gray-200 bg-black" src={clipUrl} />
+              <div className="space-y-3">
+                <video
+                  key={clipUrl}
+                  ref={videoRef}
+                  controls
+                  playsInline
+                  preload="metadata"
+                  className="w-full rounded-lg border border-gray-200 bg-black"
+                  onLoadedData={() => setVideoLoadError('')}
+                  onError={() => setVideoLoadError('Clip could not be loaded in the browser. Try Open Clip to verify the stream response.')}
+                >
+                  <source src={clipUrl} type="video/mp4" />
+                </video>
+                {videoLoadError && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    {videoLoadError}
+                  </div>
+                )}
+              </div>
             ) : (
               <div className="text-center py-4 text-sm text-gray-400 border border-dashed border-gray-200 rounded-lg">
                 Clip not available for this transaction yet

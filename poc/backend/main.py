@@ -553,6 +553,13 @@ async def get_timeline(txn_id: str):
 _RANGE_CHUNK_SIZE = 1024 * 1024
 
 
+def _video_headers(download_name: str) -> dict[str, str]:
+    return {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": f'inline; filename="{download_name}"',
+    }
+
+
 def _range_video_response(file_path: str, request: Request, download_name: str) -> Response:
     path = Path(file_path)
     file_size = path.stat().st_size
@@ -562,8 +569,8 @@ def _range_video_response(file_path: str, request: Request, download_name: str) 
         return FileResponse(
             file_path,
             media_type="video/mp4",
-            filename=download_name,
-            headers={"Accept-Ranges": "bytes"},
+            headers=_video_headers(download_name),
+            content_disposition_type="inline",
         )
 
     try:
@@ -595,8 +602,8 @@ def _range_video_response(file_path: str, request: Request, download_name: str) 
                 yield chunk
 
     headers = {
+        **_video_headers(download_name),
         "Content-Range": f"bytes {start}-{end}/{file_size}",
-        "Accept-Ranges": "bytes",
         "Content-Length": str(length),
     }
     return StreamingResponse(iter_chunks(), status_code=206, media_type="video/mp4", headers=headers)
