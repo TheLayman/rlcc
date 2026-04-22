@@ -127,12 +127,42 @@ def _missing_pos_seconds() -> int:
     return int(deps.config.rules.get("missing_pos_seconds", 30))
 
 
+def _hydrate_transaction(txn: TransactionSession) -> TransactionSession:
+    txn.store_name = txn.store_name or deps.config.get_store_name(txn.store_id)
+    camera = deps.config.get_camera_by_terminal(txn.store_id, txn.pos_terminal_no)
+    if camera:
+        txn.display_pos_label = txn.display_pos_label or camera.display_pos_label
+        txn.camera_id = txn.camera_id or camera.camera_id
+        txn.device_id = txn.device_id or camera.xprotect_device_id
+        txn.seller_window_id = txn.seller_window_id or camera.seller_window_key
+    return txn
+
+
+def _transaction_bounds(txn: TransactionSession) -> tuple[datetime | None, datetime | None]:
+    start_ts = _parse_dt(txn.started_at)
+    end_ts = txn.committed_at if isinstance(txn.committed_at, datetime) else _parse_dt(str(txn.committed_at or ""))
+    return start_ts, end_ts
+
+
+def _clip_path_exists(path_value: str) -> bool:
+    return bool(path_value and Path(path_value).exists())
+
+
+def _can_recover_clip_from_buffer(txn: TransactionSession) -> bool:
+    _start_ts, end_ts = _transaction_bounds(txn)
+    if not end_ts:
+        return False
+    buffer_floor = datetime.now(timezone.utc) - timedelta(minutes=deps.settings.video_buffer_minutes + 1)
+    return end_ts >= buffer_floor
+
+
 def _extract_transaction_clip(txn: TransactionSession) -> str:
     if not deps.video_manager or not txn.camera_id:
         return ""
-    start_ts = _parse_dt(txn.started_at)
-    end_ts = txn.committed_at if isinstance(txn.committed_at, datetime) else _parse_dt(str(txn.committed_at or ""))
+    start_ts, end_ts = _transaction_bounds(txn)
     if not start_ts or not end_ts:
+        return ""
+    if not _can_recover_clip_from_buffer(txn):
         return ""
     return deps.video_manager.extract_clip(
         camera_id=txn.camera_id,
@@ -140,6 +170,78 @@ def _extract_transaction_clip(txn: TransactionSession) -> str:
         start_ts=start_ts - timedelta(seconds=30),
         end_ts=end_ts + timedelta(seconds=30),
     )
+
+
+def _repair_alert_media_for_transaction(txn: TransactionSession) -> bool:
+    raw_alerts = deps.storage.read("alerts")
+    changed = False
+
+    for record in raw_alerts:
+        if record.get("transaction_id") != txn.id:
+            continue
+
+        record_snippet = str(record.get("snippet_path") or "")
+        updates = {
+            "store_name": txn.store_name or record.get("store_name") or deps.config.get_store_name(txn.store_id),
+            "pos_terminal_no": record.get("pos_terminal_no") or txn.pos_terminal_no,
+            "display_pos_label": record.get("display_pos_label") or txn.display_pos_label or txn.pos_terminal_no,
+            "camera_id": record.get("camera_id") or txn.camera_id,
+            "device_id": record.get("device_id") or txn.device_id,
+        }
+
+        if txn.snippet_path and (not record_snippet or not _clip_path_exists(record_snippet)):
+            updates["snippet_path"] = txn.snippet_path
+        elif record_snippet and not _clip_path_exists(record_snippet):
+            updates["snippet_path"] = ""
+
+        if any(record.get(key) != value for key, value in updates.items()):
+            record.update(updates)
+            changed = True
+
+    if changed:
+        deps.storage.replace("alerts", raw_alerts)
+    return changed
+
+
+def _repair_transaction_media(txn: TransactionSession) -> tuple[TransactionSession, bool]:
+    original = txn.model_dump()
+    txn = _hydrate_transaction(txn)
+
+    if txn.snippet_path and not _clip_path_exists(txn.snippet_path):
+        txn.snippet_path = ""
+
+    if not txn.snippet_path:
+        repaired_clip = _extract_transaction_clip(txn)
+        if repaired_clip:
+            txn.snippet_path = repaired_clip
+
+    tracked_fields = (
+        "store_name",
+        "display_pos_label",
+        "camera_id",
+        "device_id",
+        "seller_window_id",
+        "snippet_path",
+    )
+    updates = {
+        field_name: getattr(txn, field_name)
+        for field_name in tracked_fields
+        if original.get(field_name) != getattr(txn, field_name)
+    }
+
+    alerts_changed = _repair_alert_media_for_transaction(txn)
+    if updates:
+        _save_transaction_updates(txn.id, updates)
+
+    return txn, bool(updates or alerts_changed)
+
+
+def _needs_transaction_repair(txn: TransactionSession) -> bool:
+    if not txn.store_name or not txn.display_pos_label or not txn.camera_id:
+        return True
+    if txn.snippet_path and not _clip_path_exists(txn.snippet_path):
+        return True
+    return not txn.snippet_path and _can_recover_clip_from_buffer(txn)
 
 
 def _latest_transaction_timestamp() -> datetime | None:
@@ -173,6 +275,8 @@ async def _ingest_polled_bills(bills: list[dict], *, mode: str) -> dict:
 
         existing = existing_bill_numbers.get(txn.bill_number)
         if existing is not None:
+            repaired, _ = _repair_transaction_media(existing)
+            existing_bill_numbers[txn.bill_number] = repaired
             continue
 
         txn = correlate(txn, deps.cv_consumer, deps.config)
@@ -525,6 +629,10 @@ async def health():
 @app.get("/api/transactions")
 async def list_transactions():
     transactions = _sort_transactions(_load_transactions())
+    transactions = [
+        _repair_transaction_media(txn)[0] if _needs_transaction_repair(txn) else txn
+        for txn in transactions
+    ]
     serialized = [serialize_transaction(txn, deps.config) for txn in transactions]
     bills_map = {txn.id: build_bill_data(txn) for txn in transactions}
     return {"transactions": serialized, "bills_map": bills_map, "count": len(serialized)}
@@ -535,6 +643,7 @@ async def get_transaction(txn_id: str):
     txn = _find_transaction(txn_id)
     if not txn:
         raise HTTPException(status_code=404, detail="Transaction not found")
+    txn, _ = _repair_transaction_media(txn)
     return {
         "transaction": serialize_transaction(txn, deps.config),
         "bill_data": build_bill_data(txn),
@@ -612,7 +721,9 @@ def _range_video_response(file_path: str, request: Request, download_name: str) 
 @app.get("/api/transactions/{txn_id}/video")
 async def get_transaction_video(txn_id: str, request: Request):
     txn = _find_transaction(txn_id)
-    if not txn or not txn.snippet_path or not Path(txn.snippet_path).exists():
+    if txn:
+        txn, _ = _repair_transaction_media(txn)
+    if not txn or not txn.snippet_path or not _clip_path_exists(txn.snippet_path):
         raise HTTPException(status_code=404, detail="Transaction clip not found")
     return _range_video_response(txn.snippet_path, request, f"{txn_id}.mp4")
 
@@ -632,13 +743,15 @@ async def get_alert_video(alert_id: str, request: Request):
     clip_path = alert.snippet_path
     download_name = f"{alert_id}.mp4"
 
-    if (not clip_path or not Path(clip_path).exists()) and alert.transaction_id:
+    if (not clip_path or not _clip_path_exists(clip_path)) and alert.transaction_id:
         txn = _find_transaction(alert.transaction_id)
-        if txn and txn.snippet_path and Path(txn.snippet_path).exists():
+        if txn:
+            txn, _ = _repair_transaction_media(txn)
+        if txn and txn.snippet_path and _clip_path_exists(txn.snippet_path):
             clip_path = txn.snippet_path
             download_name = f"{txn.id}.mp4"
 
-    if not clip_path or not Path(clip_path).exists():
+    if not clip_path or not _clip_path_exists(clip_path):
         raise HTTPException(status_code=404, detail="Alert clip not found")
 
     return _range_video_response(clip_path, request, download_name)

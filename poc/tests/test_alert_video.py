@@ -1,9 +1,12 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 import backend.main as main_module
+from backend.config import CameraEntry, PosZoneConfig
 from backend.main import app
-from backend.models import Alert, TransactionSession
+from backend.models import Alert, TotalLine, TransactionSession
 
 
 @pytest.mark.anyio
@@ -55,3 +58,63 @@ async def test_transaction_video_is_served_inline(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert response.headers["content-type"] == "video/mp4"
     assert response.headers["content-disposition"] == 'inline; filename="TXN-002.mp4"'
+
+
+@pytest.mark.anyio
+async def test_get_transaction_repairs_missing_media_from_mapping(monkeypatch):
+    now = datetime.now(timezone.utc)
+    txn = TransactionSession(
+        id="POLL-STORE-BILL-001",
+        store_id="STORE",
+        pos_terminal_no="POS 2",
+        display_pos_label="",
+        source="poll_reconciled",
+        status="committed",
+        started_at=(now - timedelta(seconds=10)).isoformat(),
+        committed_at=now,
+        bill_number="BILL-001",
+        transaction_number="BILL-001",
+        totals=[TotalLine(line_attribute="TotalAmountToBePaid", amount=450.0)],
+    )
+    camera = CameraEntry(
+        seller_window_id="STORE_POS2",
+        store_id="STORE",
+        pos_terminal_no="POS 2",
+        display_pos_label="POS 2",
+        camera_id="cam-store-02",
+        rtsp_url="",
+        xprotect_device_id="dev-02",
+        multi_pos=False,
+        pos_zones=[PosZoneConfig(zone_id="POS2")],
+        enabled=True,
+    )
+    saved_updates: list[tuple[str, dict]] = []
+
+    monkeypatch.setattr(main_module, "_find_transaction", lambda txn_id: txn if txn_id == txn.id else None)
+    monkeypatch.setattr(main_module.deps.config, "get_camera_by_terminal", lambda store_id, pos_terminal_no: camera)
+    monkeypatch.setattr(main_module, "_extract_transaction_clip", lambda current: "/tmp/recovered.mp4")
+    monkeypatch.setattr(main_module, "_save_transaction_updates", lambda txn_id, updates: saved_updates.append((txn_id, updates)))
+    monkeypatch.setattr(main_module, "_repair_alert_media_for_transaction", lambda current: False)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(f"/api/transactions/{txn.id}")
+
+    assert response.status_code == 200
+    payload = response.json()["transaction"]
+    assert payload["cam_id"] == "cam-store-02"
+    assert payload["pos_id"] == "POS 2"
+    assert payload["clip_url"] == f"/api/transactions/{txn.id}/video"
+    assert saved_updates == [
+        (
+            txn.id,
+            {
+                "store_name": "STORE",
+                "display_pos_label": "POS 2",
+                "camera_id": "cam-store-02",
+                "device_id": "dev-02",
+                "seller_window_id": "STORE_POS2",
+                "snippet_path": "/tmp/recovered.mp4",
+            },
+        )
+    ]

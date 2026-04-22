@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -6,8 +7,28 @@ from httpx import ASGITransport, AsyncClient
 import backend.deps as deps
 import backend.main as main
 from backend.main import app
-from backend.models import TotalLine, TransactionSession
+from backend.models import Alert, TotalLine, TransactionSession
 from backend.sales_poller import map_bill_to_transaction
+
+POC_DIR = Path(__file__).parent.parent
+DATA_DIR = POC_DIR / "data"
+TRANSACTIONS_PATH = DATA_DIR / "transactions.jsonl"
+ALERTS_PATH = DATA_DIR / "alerts.jsonl"
+
+
+@pytest.fixture
+def restore_storage_files():
+    original_transactions = TRANSACTIONS_PATH.read_text(encoding="utf-8") if TRANSACTIONS_PATH.exists() else None
+    original_alerts = ALERTS_PATH.read_text(encoding="utf-8") if ALERTS_PATH.exists() else None
+    yield
+    if original_transactions is None:
+        TRANSACTIONS_PATH.unlink(missing_ok=True)
+    else:
+        TRANSACTIONS_PATH.write_text(original_transactions, encoding="utf-8")
+    if original_alerts is None:
+        ALERTS_PATH.unlink(missing_ok=True)
+    else:
+        ALERTS_PATH.write_text(original_alerts, encoding="utf-8")
 
 
 def _sample_bill(bill_no: str = "TEST/PULL/001", *, discount: float = 20.0) -> dict:
@@ -60,7 +81,7 @@ def test_map_bill_to_transaction_uses_sales_shape():
 
 
 @pytest.mark.anyio
-async def test_history_fetches_and_persists_sales_transactions(monkeypatch):
+async def test_history_fetches_and_persists_sales_transactions(monkeypatch, restore_storage_files):
     async def fake_fetch_historical(days: int):
         return [_sample_bill("TEST/PULL/002")]
 
@@ -84,7 +105,7 @@ async def test_history_fetches_and_persists_sales_transactions(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_history_skips_bill_when_push_transaction_exists(monkeypatch):
+async def test_history_skips_bill_when_push_transaction_exists(monkeypatch, restore_storage_files):
     push_txn = TransactionSession(
         id="push-existing-001",
         store_id="NDCIN1227",
@@ -126,3 +147,64 @@ async def test_history_skips_bill_when_push_transaction_exists(monkeypatch):
     matches = [txn for txn in transactions if txn["bill_number"] == "TEST/PULL/003"]
     assert len(matches) == 1
     assert matches[0]["source"] == "push_assembled"
+
+
+@pytest.mark.anyio
+async def test_history_repairs_existing_polled_transaction_media(monkeypatch, restore_storage_files):
+    existing = TransactionSession(
+        id="POLL-NDCIN1227-TEST-PULL-004",
+        store_id="NDCIN1227",
+        store_name="KFC",
+        pos_terminal_no="POS 1",
+        display_pos_label="",
+        cashier_id="cashier-1",
+        source="poll_reconciled",
+        status="committed",
+        started_at=datetime.now(timezone.utc).isoformat(),
+        committed_at=datetime.now(timezone.utc),
+        bill_number="TEST/PULL/004",
+        transaction_number="TEST/PULL/004",
+        totals=[TotalLine(line_attribute="TotalAmountToBePaid", amount=450.0)],
+    )
+    existing_alert = Alert(
+        transaction_id=existing.id,
+        store_id="NDCIN1227",
+        store_name="KFC",
+        pos_terminal_no="POS 1",
+        cashier_id="cashier-1",
+        triggered_rules=["6_high_value"],
+        timestamp=datetime.now(timezone.utc),
+    )
+    deps.storage.append("transactions", existing.model_dump())
+    deps.storage.append("alerts", existing_alert.model_dump())
+
+    async def fake_fetch_historical(days: int):
+        return [_sample_bill("TEST/PULL/004")]
+
+    async def fake_fetch_between(start, end):
+        return [_sample_bill("TEST/PULL/004")]
+
+    main.sales_poller.api_url = "https://example.com"
+    main.sales_poller.api_token = "token"
+    monkeypatch.setattr(main.sales_poller, "fetch_historical", fake_fetch_historical)
+    monkeypatch.setattr(main.sales_poller, "fetch_between", fake_fetch_between)
+    monkeypatch.setattr(main, "_extract_transaction_clip", lambda txn: "/tmp/recovered.mp4")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/history?days=1")
+        txns_resp = await client.get("/api/transactions")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["new_transactions"] == 0
+
+    transactions = txns_resp.json()["transactions"]
+    match = next(txn for txn in transactions if txn["bill_number"] == "TEST/PULL/004")
+    assert match["source"] == "poll_reconciled"
+    assert match["cam_id"] == "cam-kfc-01"
+    assert match["clip_url"] == f"/api/transactions/{existing.id}/video"
+
+    stored_alert = next(alert for alert in deps.storage.read("alerts") if alert.get("transaction_id") == existing.id)
+    assert stored_alert["camera_id"] == "cam-kfc-01"
+    assert stored_alert["snippet_path"] == "/tmp/recovered.mp4"
