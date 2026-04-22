@@ -15,7 +15,7 @@ import redis
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from backend.config import CameraEntry, Config, PosZoneConfig
+from backend.config import CameraEntry, Config, PosZoneConfig, ZONE_POLYGON_FIELDS, get_zone_polygon_value
 from backend.settings import get_settings
 
 try:
@@ -48,6 +48,23 @@ def _polygon_bbox(polygon: list[list[int]]) -> tuple[int, int, int, int]:
     xs = [point[0] for point in polygon]
     ys = [point[1] for point in polygon]
     return min(xs), min(ys), max(xs), max(ys)
+
+
+ZONE_ANNOTATION_META: dict[str, tuple[str, tuple[int, int, int], bool]] = {
+    "seller_zone": ("SELLER", (0, 255, 0), False),
+    "customer_zone": ("CUSTOMER", (255, 170, 0), False),
+    "midline": ("MIDLINE", (255, 255, 255), True),
+    "pos_zone": ("POS", (90, 90, 255), False),
+    "pos_screen_zone": ("POS SCREEN", (255, 120, 0), False),
+    "bill_zone": ("BILL", (255, 200, 0), False),
+}
+
+
+def _zone_payload(zone: PosZoneConfig) -> dict[str, Any]:
+    return {
+        "zone_id": zone.zone_id,
+        **{field_name: getattr(zone, field_name) for field_name in ZONE_POLYGON_FIELDS},
+    }
 
 
 @dataclass
@@ -358,14 +375,21 @@ class CVRuntime:
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 255), 2)
 
         for zone in camera.pos_zones:
-            if zone.seller_zone:
-                seller_poly = np.array(zone.seller_zone, dtype=np.int32)
-                cv2.polylines(frame, [seller_poly], True, (0, 255, 0), 2)
-                cv2.putText(frame, f"{zone.zone_id} SELLER", tuple(zone.seller_zone[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            if zone.bill_zone:
-                bill_poly = np.array(zone.bill_zone, dtype=np.int32)
-                cv2.polylines(frame, [bill_poly], True, (255, 200, 0), 2)
-                cv2.putText(frame, f"{zone.zone_id} BILL", tuple(zone.bill_zone[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 200, 0), 2)
+            for field_name, (label, color, is_line) in ZONE_ANNOTATION_META.items():
+                polygon = getattr(zone, field_name)
+                if not polygon:
+                    continue
+                polygon_points = np.array(polygon, dtype=np.int32)
+                cv2.polylines(frame, [polygon_points], not is_line, color, 2)
+                cv2.putText(
+                    frame,
+                    f"{zone.zone_id} {label}",
+                    tuple(polygon[0]),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    color,
+                    2,
+                )
 
         status_lines = [
             f"{camera.camera_id} | {camera.display_pos_label or camera.pos_terminal_no}",
@@ -504,14 +528,7 @@ async def zones(camera_id: str | None = Query(default=None)):
             "store_id": camera.store_id,
             "pos_terminal_no": camera.pos_terminal_no,
             "zones": {
-                "pos_zones": [
-                    {
-                        "zone_id": zone.zone_id,
-                        "seller_zone": zone.seller_zone,
-                        "bill_zone": zone.bill_zone,
-                    }
-                    for zone in camera.pos_zones
-                ]
+                "pos_zones": [_zone_payload(zone) for zone in camera.pos_zones]
             },
         }
     return {
@@ -519,14 +536,7 @@ async def zones(camera_id: str | None = Query(default=None)):
             {
                 "camera_id": state.camera.camera_id,
                 "zones": {
-                    "pos_zones": [
-                        {
-                            "zone_id": zone.zone_id,
-                            "seller_zone": zone.seller_zone,
-                            "bill_zone": zone.bill_zone,
-                        }
-                        for zone in state.camera.pos_zones
-                    ]
+                    "pos_zones": [_zone_payload(zone) for zone in state.camera.pos_zones]
                 },
             }
             for state in runtime.states.values()
@@ -565,8 +575,7 @@ async def zones_save(payload: dict):
         runtime.config.cameras[idx].pos_zones = [
             PosZoneConfig(
                 zone_id=zone["zone_id"],
-                seller_zone=zone.get("seller_zone", []),
-                bill_zone=zone.get("bill_zone", []),
+                **{field_name: get_zone_polygon_value(zone, field_name) or [] for field_name in ZONE_POLYGON_FIELDS},
             )
             for zone in zones
         ]

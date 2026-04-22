@@ -18,7 +18,7 @@ def _make_cv_consumer_with_window(pos_zone, camera_id, non_seller_pct=0.8, bill_
         non_seller_count_max=2, bill_motion_detected=bill_motion,
         bill_bg_change_detected=False, frame_count=180,
     )
-    cv.windows[pos_zone] = [window]
+    cv.windows[CVConsumer.window_key(camera_id, pos_zone)] = [window]
     return cv, now
 
 
@@ -72,3 +72,39 @@ def test_correlate_multi_pos():
     )
     result = correlate(txn, cv, config)
     assert result.cv_confidence == "REDUCED"
+
+
+def test_correlate_ignores_windows_from_other_camera():
+    cv = CVConsumer.__new__(CVConsumer)
+    cv.windows = {}
+    cv.latest = {}
+    cv._accum = {}
+    now = datetime.now(timezone.utc)
+    cv.windows[CVConsumer.window_key("cam-other", "POS1")] = [
+        CVWindow(
+            pos_zone="POS1",
+            camera_id="cam-other",
+            window_start=now - timedelta(seconds=30),
+            window_end=now,
+            seller_present_pct=0.9,
+            non_seller_present_pct=0.8,
+            non_seller_count_max=2,
+            bill_motion_detected=True,
+            bill_bg_change_detected=False,
+            frame_count=180,
+        )
+    ]
+    config = _make_config_with_camera("STORE_POS 1", "cam-target", "POS1")
+    txn = TransactionSession(
+        id="TXN-004",
+        store_id="STORE",
+        pos_terminal_no="POS 1",
+        source="push_assembled",
+        started_at=(now - timedelta(seconds=25)).isoformat(),
+        committed_at=now,
+    )
+
+    result = correlate(txn, cv, config)
+
+    assert result.cv_confidence == "UNAVAILABLE"
+    assert result.camera_id == "cam-target"

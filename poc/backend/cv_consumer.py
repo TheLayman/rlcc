@@ -35,6 +35,10 @@ class CVConsumer:
         self.activity_states: dict[str, ActivityState] = {}
         self.last_signal_at: datetime | None = None
 
+    @staticmethod
+    def window_key(camera_id: str, pos_zone: str) -> str:
+        return f"{camera_id}:{pos_zone}"
+
     async def connect(self):
         self.redis = aioredis.from_url(self.redis_url)
 
@@ -77,7 +81,7 @@ class CVConsumer:
 
         for zone_data in signal.get("zones", []):
             zone_id = zone_data["pos_zone"]
-            key = f"{camera_id}:{zone_id}"
+            key = self.window_key(camera_id, zone_id)
 
             if key not in self._accum:
                 window_start = ts.replace(second=(ts.second // self._window_duration) * self._window_duration, microsecond=0)
@@ -180,12 +184,13 @@ class CVConsumer:
             bill_bg_change_detected=acc["bill_bg"],
             frame_count=acc["frame_count"],
         )
-        self.windows[acc["zone_id"]].append(window)
+        self.windows[key].append(window)
         cutoff = datetime.now(timezone.utc) - timedelta(days=14)
-        self.windows[acc["zone_id"]] = [w for w in self.windows[acc["zone_id"]] if w.window_end > cutoff]
+        self.windows[key] = [w for w in self.windows[key] if w.window_end > cutoff]
 
-    def get_windows(self, pos_zone: str, start_ts: datetime, end_ts: datetime) -> list[CVWindow]:
-        return [w for w in self.windows.get(pos_zone, []) if w.window_end > start_ts and w.window_start < end_ts]
+    def get_windows(self, camera_id: str, pos_zone: str, start_ts: datetime, end_ts: datetime) -> list[CVWindow]:
+        key = self.window_key(camera_id, pos_zone)
+        return [w for w in self.windows.get(key, []) if w.window_end > start_ts and w.window_start < end_ts]
 
     def get_recent_signals(self) -> list[dict]:
         return list(self.recent_signals)

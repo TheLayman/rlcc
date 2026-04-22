@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -14,11 +14,43 @@ def build_seller_window_id(store_id: str, pos_terminal_no: str) -> str:
     return f"{store_id}_{normalize_terminal(pos_terminal_no)}"
 
 
+ZONE_POLYGON_FIELDS = (
+    "seller_zone",
+    "customer_zone",
+    "midline",
+    "pos_zone",
+    "pos_screen_zone",
+    "bill_zone",
+)
+
+ZONE_POLYGON_ALIASES: dict[str, tuple[str, ...]] = {
+    "seller_zone": (),
+    "customer_zone": (),
+    "midline": ("mid_line",),
+    "pos_zone": (),
+    "pos_screen_zone": ("pos_screen",),
+    "bill_zone": ("bill_gen_zone", "bill_genzone"),
+}
+
+
+def get_zone_polygon_value(raw_zone: dict, field_name: str):
+    if field_name in raw_zone:
+        return raw_zone.get(field_name)
+    for alias in ZONE_POLYGON_ALIASES.get(field_name, ()):
+        if alias in raw_zone:
+            return raw_zone.get(alias)
+    return None
+
+
 @dataclass
 class PosZoneConfig:
     zone_id: str
-    seller_zone: list[list[int]]
-    bill_zone: list[list[int]]
+    seller_zone: list[list[int]] = field(default_factory=list)
+    customer_zone: list[list[int]] = field(default_factory=list)
+    midline: list[list[int]] = field(default_factory=list)
+    pos_zone: list[list[int]] = field(default_factory=list)
+    pos_screen_zone: list[list[int]] = field(default_factory=list)
+    bill_zone: list[list[int]] = field(default_factory=list)
 
     @property
     def normalized_zone_id(self) -> str:
@@ -115,8 +147,12 @@ class Config:
             zones = [
                 PosZoneConfig(
                     zone_id=z["zone_id"],
-                    seller_zone=z.get("seller_zone", []),
-                    bill_zone=z.get("bill_zone", []),
+                    seller_zone=get_zone_polygon_value(z, "seller_zone") or [],
+                    customer_zone=get_zone_polygon_value(z, "customer_zone") or [],
+                    midline=get_zone_polygon_value(z, "midline") or [],
+                    pos_zone=get_zone_polygon_value(z, "pos_zone") or [],
+                    pos_screen_zone=get_zone_polygon_value(z, "pos_screen_zone") or [],
+                    bill_zone=get_zone_polygon_value(z, "bill_zone") or [],
                 )
                 for z in c.get("zones", {}).get("pos_zones", [])
             ]
@@ -186,6 +222,10 @@ class Config:
                             {
                                 "zone_id": z.zone_id,
                                 "seller_zone": z.seller_zone,
+                                "customer_zone": z.customer_zone,
+                                "midline": z.midline,
+                                "pos_zone": z.pos_zone,
+                                "pos_screen_zone": z.pos_screen_zone,
                                 "bill_zone": z.bill_zone,
                             }
                             for z in c.pos_zones
@@ -243,6 +283,7 @@ class Config:
     def validate_mappings(self) -> list[str]:
         issues: list[str] = []
         seen_keys: set[str] = set()
+        seen_camera_ids: set[str] = set()
 
         for c in self.cameras:
             if not c.store_id:
@@ -258,6 +299,23 @@ class Config:
             if key in seen_keys:
                 issues.append(f"duplicate camera mapping for {c.store_id}:{c.pos_terminal_no}")
             seen_keys.add(key)
+
+            normalized_camera_id = c.camera_id.strip().upper()
+            if normalized_camera_id:
+                if normalized_camera_id in seen_camera_ids:
+                    issues.append(f"duplicate camera_id `{c.camera_id}`")
+                seen_camera_ids.add(normalized_camera_id)
+
+            seen_zone_ids: set[str] = set()
+            for zone in c.pos_zones:
+                normalized_zone_id = zone.normalized_zone_id
+                if not normalized_zone_id:
+                    issues.append(f"camera mapping has blank zone_id for camera {c.camera_id}")
+                    continue
+                if normalized_zone_id in seen_zone_ids:
+                    issues.append(f"duplicate zone_id `{zone.zone_id}` for camera {c.camera_id}")
+                    continue
+                seen_zone_ids.add(normalized_zone_id)
 
             if not self.get_store(c.store_id):
                 issues.append(f"camera mapping references unknown store {c.store_id}")

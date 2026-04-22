@@ -28,7 +28,7 @@ def correlate(txn: TransactionSession, cv_consumer: CVConsumer, config: Config) 
 
     start_padded = start - timedelta(seconds=3)
     end_padded = end + timedelta(seconds=3)
-    windows = cv_consumer.get_windows(pos_zone, start_padded, end_padded)
+    windows = cv_consumer.get_windows(camera.camera_id, pos_zone, start_padded, end_padded)
 
     if not windows:
         txn.cv_confidence = "UNAVAILABLE"

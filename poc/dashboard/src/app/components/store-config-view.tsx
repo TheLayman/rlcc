@@ -28,7 +28,13 @@ import {
 import { Switch } from '@/app/components/ui/switch';
 import { BACKEND_BASE, CV_BASE } from '@/lib/runtime-config';
 
-type PolygonKey = 'seller_zone' | 'bill_zone';
+type PolygonKey =
+  | 'seller_zone'
+  | 'customer_zone'
+  | 'midline'
+  | 'pos_zone'
+  | 'pos_screen_zone'
+  | 'bill_zone';
 type Point = [number, number];
 
 interface StoreEntry {
@@ -41,6 +47,10 @@ interface StoreEntry {
 interface PosZoneConfig {
   zone_id: string;
   seller_zone: Point[];
+  customer_zone: Point[];
+  midline: Point[];
+  pos_zone: Point[];
+  pos_screen_zone: Point[];
   bill_zone: Point[];
 }
 
@@ -64,12 +74,115 @@ interface CameraMappingResponse {
   cameras?: CameraMapping[];
 }
 
+interface PolygonOption {
+  key: PolygonKey;
+  label: string;
+  shortLabel: string;
+  activeClassName: string;
+  inactiveClassName: string;
+  stroke: string;
+  activeStroke: string;
+  fill: string;
+  inactiveFill: string;
+  isLine?: boolean;
+}
+
+const POLYGON_OPTIONS: PolygonOption[] = [
+  {
+    key: 'seller_zone',
+    label: 'Seller Zone',
+    shortLabel: 'Seller',
+    activeClassName: 'bg-green-600 text-white hover:bg-green-700',
+    inactiveClassName: 'border-gray-200 text-green-700',
+    stroke: '#22c55e',
+    activeStroke: '#16a34a',
+    fill: 'rgba(34, 197, 94, 0.26)',
+    inactiveFill: 'rgba(34, 197, 94, 0.14)',
+  },
+  {
+    key: 'customer_zone',
+    label: 'Customer Zone',
+    shortLabel: 'Customer',
+    activeClassName: 'bg-sky-600 text-white hover:bg-sky-700',
+    inactiveClassName: 'border-gray-200 text-sky-700',
+    stroke: '#0ea5e9',
+    activeStroke: '#0284c7',
+    fill: 'rgba(14, 165, 233, 0.24)',
+    inactiveFill: 'rgba(14, 165, 233, 0.12)',
+  },
+  {
+    key: 'midline',
+    label: 'Midline',
+    shortLabel: 'Midline',
+    activeClassName: 'bg-slate-700 text-white hover:bg-slate-800',
+    inactiveClassName: 'border-gray-200 text-slate-700',
+    stroke: '#cbd5e1',
+    activeStroke: '#ffffff',
+    fill: 'transparent',
+    inactiveFill: 'transparent',
+    isLine: true,
+  },
+  {
+    key: 'pos_zone',
+    label: 'POS Zone',
+    shortLabel: 'POS',
+    activeClassName: 'bg-rose-600 text-white hover:bg-rose-700',
+    inactiveClassName: 'border-gray-200 text-rose-700',
+    stroke: '#fb7185',
+    activeStroke: '#e11d48',
+    fill: 'rgba(251, 113, 133, 0.24)',
+    inactiveFill: 'rgba(251, 113, 133, 0.12)',
+  },
+  {
+    key: 'pos_screen_zone',
+    label: 'POS Screen',
+    shortLabel: 'POS Screen',
+    activeClassName: 'bg-cyan-600 text-white hover:bg-cyan-700',
+    inactiveClassName: 'border-gray-200 text-cyan-700',
+    stroke: '#06b6d4',
+    activeStroke: '#0891b2',
+    fill: 'rgba(6, 182, 212, 0.24)',
+    inactiveFill: 'rgba(6, 182, 212, 0.12)',
+  },
+  {
+    key: 'bill_zone',
+    label: 'Bill Gen Zone',
+    shortLabel: 'Bill Gen',
+    activeClassName: 'bg-amber-500 text-white hover:bg-amber-600',
+    inactiveClassName: 'border-gray-200 text-amber-700',
+    stroke: '#f59e0b',
+    activeStroke: '#d97706',
+    fill: 'rgba(245, 158, 11, 0.30)',
+    inactiveFill: 'rgba(251, 191, 36, 0.16)',
+  },
+];
+
+const POLYGON_OPTION_MAP: Record<PolygonKey, PolygonOption> = Object.fromEntries(
+  POLYGON_OPTIONS.map(option => [option.key, option]),
+) as Record<PolygonKey, PolygonOption>;
+
 function normalizeTerminal(value: string) {
   return (value || '').toUpperCase().replace(/\s+/g, '');
 }
 
 function buildSellerWindowId(storeId: string, posTerminalNo: string) {
   return `${storeId}_${normalizeTerminal(posTerminalNo)}`;
+}
+
+function buildDefaultZoneId(preferredLabel: string, fallbackIndex: number, usedIds: Set<string>) {
+  const preferred = normalizeTerminal(preferredLabel);
+  if (preferred && !usedIds.has(preferred)) {
+    return preferred;
+  }
+
+  const preferredMatch = preferred.match(/^POS(\d+)$/);
+  let candidateIndex = preferredMatch ? Number(preferredMatch[1]) + 1 : Math.max(1, fallbackIndex);
+  let candidate = `POS${candidateIndex}`;
+  while (usedIds.has(candidate)) {
+    candidateIndex += 1;
+    candidate = `POS${candidateIndex}`;
+  }
+  return candidate;
 }
 
 function slugify(value: string) {
@@ -79,23 +192,50 @@ function slugify(value: string) {
     .replace(/^-+|-+$/g, '') || 'camera';
 }
 
+function createEmptyZone(zoneId: string): PosZoneConfig {
+  return {
+    zone_id: zoneId,
+    seller_zone: [],
+    customer_zone: [],
+    midline: [],
+    pos_zone: [],
+    pos_screen_zone: [],
+    bill_zone: [],
+  };
+}
+
 function ensureMappingShape(camera: CameraMapping): CameraMapping {
-  const posZones = camera.zones?.pos_zones?.map(zone => ({
-    zone_id: zone.zone_id || normalizeTerminal(camera.display_pos_label || camera.pos_terminal_no || `POS${Math.max(1, 1)}`),
-    seller_zone: zone.seller_zone || [],
-    bill_zone: zone.bill_zone || [],
-  })) || [];
+  const usedZoneIds = new Set<string>();
+  const posZones = camera.zones?.pos_zones?.map((zone, index) => {
+    const rawZoneId = (zone.zone_id || '').trim();
+    const zoneId = rawZoneId || buildDefaultZoneId(
+      camera.display_pos_label || camera.pos_terminal_no,
+      index + 1,
+      usedZoneIds,
+    );
+    const normalizedZoneId = normalizeTerminal(zoneId);
+    if (normalizedZoneId) {
+      usedZoneIds.add(normalizedZoneId);
+    }
+    return {
+      ...createEmptyZone(zoneId),
+      seller_zone: zone.seller_zone || [],
+      customer_zone: zone.customer_zone || [],
+      midline: zone.midline || [],
+      pos_zone: zone.pos_zone || [],
+      pos_screen_zone: zone.pos_screen_zone || [],
+      bill_zone: zone.bill_zone || [],
+    };
+  }) || [];
 
   return {
     ...camera,
     display_pos_label: camera.display_pos_label || camera.pos_terminal_no,
     seller_window_id: buildSellerWindowId(camera.store_id, camera.pos_terminal_no || camera.display_pos_label),
     zones: {
-      pos_zones: posZones.length > 0 ? posZones : [{
-        zone_id: normalizeTerminal(camera.display_pos_label || camera.pos_terminal_no || 'POS1'),
-        seller_zone: [],
-        bill_zone: [],
-      }],
+      pos_zones: posZones.length > 0
+        ? posZones
+        : [createEmptyZone(buildDefaultZoneId(camera.display_pos_label || camera.pos_terminal_no, 1, new Set<string>()))],
     },
   };
 }
@@ -312,11 +452,7 @@ export function StoreConfigView() {
       enabled: true,
       zones: {
         pos_zones: [
-          {
-            zone_id: 'POS1',
-            seller_zone: [],
-            bill_zone: [],
-          },
+          createEmptyZone('POS1'),
         ],
       },
     });
@@ -343,17 +479,17 @@ export function StoreConfigView() {
   const addZone = () => {
     if (!selectedCamera) return;
     const nextIndex = selectedCamera.zones.pos_zones.length + 1;
-    const nextZoneId = normalizeTerminal(selectedCamera.display_pos_label || selectedCamera.pos_terminal_no || `POS${nextIndex}`) || `POS${nextIndex}`;
+    const nextZoneId = buildDefaultZoneId(
+      selectedCamera.display_pos_label || selectedCamera.pos_terminal_no,
+      nextIndex,
+      new Set(selectedCamera.zones.pos_zones.map(zone => normalizeTerminal(zone.zone_id)).filter(Boolean)),
+    );
     updateSelectedCamera(camera => ({
       ...camera,
       zones: {
         pos_zones: [
           ...camera.zones.pos_zones,
-          {
-            zone_id: nextZoneId,
-            seller_zone: [],
-            bill_zone: [],
-          },
+          createEmptyZone(nextZoneId),
         ],
       },
     }));
@@ -409,6 +545,7 @@ export function StoreConfigView() {
   const saveConfig = async () => {
     setSaving(true);
     const normalizedStores = stores.map(normalizeStore);
+    const normalizedMappings = mappings.map(ensureMappingShape);
     const blankStore = normalizedStores.find(store => !store.cin || !store.name);
     if (blankStore) {
       toast.error('Every store needs both Store ID and Store Name');
@@ -423,7 +560,36 @@ export function StoreConfigView() {
       return;
     }
 
-    const payload = { cameras: mappings.map(ensureMappingShape) };
+    const blankCamera = normalizedMappings.find(camera => !camera.store_id || !camera.camera_id || !camera.pos_terminal_no);
+    if (blankCamera) {
+      toast.error('Every camera mapping needs Store ID, Camera ID, and POS Terminal No');
+      setSaving(false);
+      return;
+    }
+
+    const cameraIds = normalizedMappings.map(camera => camera.camera_id.trim().toUpperCase()).filter(Boolean);
+    if (new Set(cameraIds).size !== cameraIds.length) {
+      toast.error('Camera IDs must be unique');
+      setSaving(false);
+      return;
+    }
+
+    for (const camera of normalizedMappings) {
+      const zoneIds = camera.zones.pos_zones.map(zone => normalizeTerminal(zone.zone_id));
+      const cameraLabel = camera.camera_id || camera.display_pos_label || camera.pos_terminal_no;
+      if (zoneIds.some(zoneId => !zoneId)) {
+        toast.error(`Every zone needs a Zone ID for ${cameraLabel}`);
+        setSaving(false);
+        return;
+      }
+      if (new Set(zoneIds).size !== zoneIds.length) {
+        toast.error(`Zone IDs must be unique for ${cameraLabel}`);
+        setSaving(false);
+        return;
+      }
+    }
+
+    const payload = { cameras: normalizedMappings };
     try {
       const storesResponse = await fetch(`${BACKEND_BASE}/api/stores`, {
         method: 'POST',
@@ -474,7 +640,7 @@ export function StoreConfigView() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-bold text-gray-800">Store Config</h2>
-          <p className="text-sm text-gray-500">Assign store IDs, update RTSP URLs, and draw seller and bill zones directly on the live CV frame.</p>
+          <p className="text-sm text-gray-500">Assign store IDs, update RTSP URLs, and draw seller, customer, midline, POS, POS screen, and bill-gen zones directly on the live CV frame.</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" className="gap-1.5 h-8 text-xs border-gray-200" onClick={() => loadConfig(selectedCameraId)}>
@@ -749,7 +915,7 @@ export function StoreConfigView() {
                   <div className="flex items-center justify-between">
                     <div>
                       <div className="text-sm font-semibold text-gray-800">POS Zones</div>
-                      <div className="text-xs text-gray-500">Choose a zone, then click on the frame to place polygon points.</div>
+                      <div className="text-xs text-gray-500">Choose a zone, then click on the frame to place points for each configured shape.</div>
                     </div>
                     <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs border-gray-200" onClick={addZone}>
                       <Plus className="h-3 w-3" /> Add Zone
@@ -787,34 +953,29 @@ export function StoreConfigView() {
                           className="border-gray-200 bg-white"
                           placeholder="POS1"
                         />
+                        <div className="text-xs text-gray-500">Use a unique Zone ID per camera, like `POS1`, `POS2`, or `COUNTER_A`.</div>
                       </div>
 
                       <div className="space-y-2">
-                        <Label>Polygon Mode</Label>
-                        <div className="flex gap-2">
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant={activePolygon === 'seller_zone' ? 'default' : 'outline'}
-                            className={activePolygon === 'seller_zone' ? 'bg-green-600 text-white hover:bg-green-700' : 'border-gray-200 text-green-700'}
-                            onClick={() => setActivePolygon('seller_zone')}
-                          >
-                            Seller Zone
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant={activePolygon === 'bill_zone' ? 'default' : 'outline'}
-                            className={activePolygon === 'bill_zone' ? 'bg-amber-500 text-white hover:bg-amber-600' : 'border-gray-200 text-amber-700'}
-                            onClick={() => setActivePolygon('bill_zone')}
-                          >
-                            Bill Zone
-                          </Button>
+                        <Label>Shape Type</Label>
+                        <div className="flex flex-wrap gap-2">
+                          {POLYGON_OPTIONS.map(option => (
+                            <Button
+                              key={option.key}
+                              type="button"
+                              size="sm"
+                              variant={activePolygon === option.key ? 'default' : 'outline'}
+                              className={activePolygon === option.key ? option.activeClassName : option.inactiveClassName}
+                              onClick={() => setActivePolygon(option.key)}
+                            >
+                              {option.label}
+                            </Button>
+                          ))}
                         </div>
                       </div>
 
                       <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
-                        <div>Selected polygon: <span className="font-semibold text-gray-800">{activePolygon === 'seller_zone' ? 'Seller' : 'Bill'}</span></div>
+                        <div>Selected shape: <span className="font-semibold text-gray-800">{POLYGON_OPTION_MAP[activePolygon].label}</span></div>
                         <div className="mt-1">Points: {selectedZone[activePolygon].length}</div>
                       </div>
 
@@ -823,7 +984,7 @@ export function StoreConfigView() {
                           <Undo2 className="h-3 w-3" /> Undo Point
                         </Button>
                         <Button type="button" size="sm" variant="outline" className="h-8 gap-1.5 border-red-200 text-xs text-red-700 hover:bg-red-50" onClick={clearPolygon}>
-                          <Trash2 className="h-3 w-3" /> Clear Polygon
+                          <Trash2 className="h-3 w-3" /> Clear Shape
                         </Button>
                         <Button type="button" size="sm" variant="outline" className="col-span-2 h-8 gap-1.5 border-red-200 text-xs text-red-700 hover:bg-red-50" onClick={removeZone}>
                           <Trash2 className="h-3 w-3" /> Remove Zone
@@ -839,7 +1000,7 @@ export function StoreConfigView() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <div className="text-sm font-semibold text-gray-800">Live Frame Zone Editor</div>
-                      <div className="text-xs text-gray-500">Click on the frame to append points to the active polygon. Save to persist and reload CV.</div>
+                      <div className="text-xs text-gray-500">Click on the frame to append points to the active shape. Save to persist and reload CV.</div>
                     </div>
                     <Button type="button" size="sm" variant="outline" className="h-8 gap-1.5 text-xs border-gray-200" onClick={() => setFrameVersion(Date.now())}>
                       <RefreshCw className="h-3 w-3" /> Refresh Frame
@@ -886,28 +1047,45 @@ export function StoreConfigView() {
                           >
                             {selectedCamera.zones.pos_zones.map((zone, index) => {
                               const isSelected = index === selectedZoneIndex;
-                              const sellerActive = isSelected && activePolygon === 'seller_zone';
-                              const billActive = isSelected && activePolygon === 'bill_zone';
-                              const labelPoint = zone.seller_zone[0] || zone.bill_zone[0];
+                              const labelPoint =
+                                zone.seller_zone[0]
+                                || zone.customer_zone[0]
+                                || zone.pos_zone[0]
+                                || zone.pos_screen_zone[0]
+                                || zone.bill_zone[0]
+                                || zone.midline[0];
 
                               return (
                                 <g key={`${zone.zone_id}-${index}`}>
-                                  {zone.seller_zone.length > 0 && (
-                                    <polygon
-                                      points={pointsToString(zone.seller_zone)}
-                                      fill={sellerActive ? 'rgba(34, 197, 94, 0.26)' : 'rgba(34, 197, 94, 0.14)'}
-                                      stroke={sellerActive ? '#16a34a' : '#22c55e'}
-                                      strokeWidth={sellerActive ? 4 : 2}
-                                    />
-                                  )}
-                                  {zone.bill_zone.length > 0 && (
-                                    <polygon
-                                      points={pointsToString(zone.bill_zone)}
-                                      fill={billActive ? 'rgba(245, 158, 11, 0.30)' : 'rgba(251, 191, 36, 0.16)'}
-                                      stroke={billActive ? '#d97706' : '#f59e0b'}
-                                      strokeWidth={billActive ? 4 : 2}
-                                    />
-                                  )}
+                                  {POLYGON_OPTIONS.map(option => {
+                                    const points = zone[option.key];
+                                    if (points.length === 0) return null;
+
+                                    const isActive = isSelected && activePolygon === option.key;
+                                    if (option.isLine) {
+                                      return (
+                                        <polyline
+                                          key={`${zone.zone_id}-${option.key}`}
+                                          points={pointsToString(points)}
+                                          fill="none"
+                                          stroke={isActive ? option.activeStroke : option.stroke}
+                                          strokeWidth={isActive ? 5 : 3}
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                        />
+                                      );
+                                    }
+
+                                    return (
+                                      <polygon
+                                        key={`${zone.zone_id}-${option.key}`}
+                                        points={pointsToString(points)}
+                                        fill={isActive ? option.fill : option.inactiveFill}
+                                        stroke={isActive ? option.activeStroke : option.stroke}
+                                        strokeWidth={isActive ? 4 : 2}
+                                      />
+                                    );
+                                  })}
                                   {labelPoint && (
                                     <text
                                       x={labelPoint[0] + 10}
@@ -949,9 +1127,9 @@ export function StoreConfigView() {
                         Drawing Tips
                       </div>
                       <div className="mt-2 space-y-1 text-xs text-gray-600">
-                        <div>1. Choose the POS zone and polygon type.</div>
-                        <div>2. Click the live frame to place each polygon vertex.</div>
-                        <div>3. Use “Undo Point” or “Clear Polygon” if you miss a point.</div>
+                        <div>1. Choose the POS zone and shape type.</div>
+                        <div>2. Click the live frame to place each point for seller, customer, midline, POS, POS screen, or bill-gen shapes.</div>
+                        <div>3. Use “Undo Point” or “Clear Shape” if you miss a point.</div>
                         <div>4. Save the config to persist the zones and reload CV.</div>
                       </div>
                     </div>

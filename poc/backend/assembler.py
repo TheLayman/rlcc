@@ -93,7 +93,7 @@ class TransactionAssembler:
         expired: list[TransactionSession] = []
         expired_ids: list[str] = []
         for session_id, created in self._session_times.items():
-            if now - created > self.timeout:
+            if now - created >= self.timeout:
                 expired_ids.append(session_id)
         for session_id in expired_ids:
             session = self.sessions.pop(session_id, None)

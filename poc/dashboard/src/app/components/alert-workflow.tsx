@@ -140,6 +140,8 @@ export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransacti
               const txn = getTransaction(alert.transaction_id);
               const isSelected = selectedAlertId === alert.id;
               const clipUrl = alert.clip_url ? `${BACKEND_BASE}${alert.clip_url}` : txn?.clip_url ? `${BACKEND_BASE}${txn.clip_url}` : null;
+              const hasTransactionReference = Boolean(alert.transaction_id && alert.transaction_id !== 'N/A');
+              const canOpenFootage = Boolean(onOpenTransaction && (clipUrl || hasTransactionReference));
 
               return (
                 <div key={alert.id} className={`p-4 ${isSelected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
@@ -178,9 +180,9 @@ export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransacti
                       <Button
                         variant="outline"
                         size="sm"
-                        disabled={!clipUrl || !onOpenTransaction}
+                        disabled={!canOpenFootage}
                         onClick={() => onOpenTransaction?.(alert)}
-                        className={`gap-1 border-gray-200 text-xs ${clipUrl ? 'text-blue-600 hover:bg-blue-50' : 'text-gray-400 cursor-not-allowed'}`}
+                        className={`gap-1 border-gray-200 text-xs ${canOpenFootage ? 'text-blue-600 hover:bg-blue-50' : 'text-gray-400 cursor-not-allowed'}`}
                       >
                         <Video className="h-3 w-3" />
                         Footage

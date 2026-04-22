@@ -29,6 +29,12 @@ def clip_url_for_transaction(txn: TransactionSession) -> str | None:
     return f"/api/transactions/{txn.id}/video" if txn.snippet_path else None
 
 
+def clip_url_for_alert(alert: Alert) -> str | None:
+    if alert.snippet_path or alert.transaction_id:
+        return f"/api/alerts/{alert.id}/video"
+    return None
+
+
 def serialize_transaction(txn: TransactionSession, config: Config) -> dict:
     return {
         "id": txn.id,
@@ -78,7 +84,7 @@ def serialize_alert(alert: Alert, config: Config) -> dict:
         "status": alert.status,
         "cam_id": alert.camera_id,
         "pos_id": alert.display_pos_label or alert.pos_terminal_no,
-        "clip_url": f"/api/alerts/{alert.id}/video" if alert.snippet_path else None,
+        "clip_url": clip_url_for_alert(alert),
         "remarks": alert.remarks or "",
         "source": alert.source,
     }

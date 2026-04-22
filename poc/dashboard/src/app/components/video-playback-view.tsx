@@ -29,6 +29,7 @@ import {
   Clock,
 } from 'lucide-react';
 import { Transaction, ReceiptItem } from '@/lib/mock-data';
+import { BACKEND_BASE } from '@/lib/runtime-config';
 import { toast } from 'sonner';
 
 interface VideoPlaybackViewProps {
@@ -193,18 +194,23 @@ export function VideoPlaybackView({
             ref={videoContainerRef}
             className="flex-1 bg-gray-900 rounded-lg overflow-hidden mb-4 relative group shadow-lg"
           >
-            {/* Mock video display */}
-            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-800 to-gray-900">
-              <div className="text-center">
-                <div className="text-6xl mb-4">🎥</div>
-                <p className="text-gray-300">
-                  Mock CCTV Footage - {transaction.cam_id}
-                </p>
-                <p className="text-sm text-gray-400 mt-2">
-                  Cashier: {transaction.cashier_name} | POS: {transaction.pos_id}
-                </p>
+            {transaction.clip_url ? (
+              <video
+                src={`${BACKEND_BASE}${transaction.clip_url}`}
+                controls
+                className="w-full h-full object-contain bg-black"
+              />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-800 to-gray-900">
+                <div className="text-center">
+                  <p className="text-gray-300">No clip available for this transaction</p>
+                  <p className="text-sm text-gray-400 mt-2">
+                    Cashier: {transaction.cashier_name} | POS: {transaction.pos_id}
+                  </p>
+                </div>
               </div>
-
+            )}
+            <div className="pointer-events-none absolute inset-0">
               {/* Current item highlight */}
               {currentItem && (
                 <div className="absolute bottom-20 left-6 bg-blue-600/90 text-white px-4 py-2 rounded-lg">
@@ -239,8 +245,8 @@ export function VideoPlaybackView({
               </div>
             </div>
 
-            {/* Play button overlay */}
-            {!isPlaying && (
+            {/* Play button overlay (only when no real clip) */}
+            {!transaction.clip_url && !isPlaying && (
               <button
                 onClick={handlePlayPause}
                 className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity"

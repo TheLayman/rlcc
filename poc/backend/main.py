@@ -6,9 +6,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 import backend.deps as deps
@@ -279,6 +279,27 @@ async def expiry_checker():
             txn.risk_level = "Medium"
             txn.triggered_rules = ["abandoned_transaction"]
             txn.notes = "Transaction expired before CommitTransaction."
+
+            if not txn.camera_id and txn.pos_terminal_no:
+                camera = deps.config.get_camera_by_terminal(txn.store_id, txn.pos_terminal_no)
+                if camera:
+                    txn.camera_id = camera.camera_id
+                    txn.display_pos_label = txn.display_pos_label or camera.display_pos_label
+
+            snippet = ""
+            anchor = _parse_dt(txn.last_event_at) or _parse_dt(txn.started_at)
+            if deps.video_manager and txn.camera_id and anchor:
+                try:
+                    snippet = deps.video_manager.extract_clip(
+                        camera_id=txn.camera_id,
+                        clip_id=f"abandoned-{txn.id}",
+                        start_ts=anchor - timedelta(seconds=30),
+                        end_ts=anchor + timedelta(seconds=30),
+                    )
+                except Exception as exc:
+                    print(f"[expiry] clip extraction failed for {txn.id}: {exc}")
+            txn.snippet_path = snippet
+
             deps.storage.append("transactions", txn.model_dump())
             alert = Alert(
                 transaction_id=txn.id,
@@ -291,6 +312,7 @@ async def expiry_checker():
                 triggered_rules=["abandoned_transaction"],
                 camera_id=txn.camera_id,
                 device_id=txn.device_id,
+                snippet_path=snippet,
                 source="expired_transaction",
             )
             deps.storage.append("alerts", alert.model_dump())
@@ -528,12 +550,64 @@ async def get_timeline(txn_id: str):
     return build_timeline(txn)
 
 
+_RANGE_CHUNK_SIZE = 1024 * 1024
+
+
+def _range_video_response(file_path: str, request: Request, download_name: str) -> Response:
+    path = Path(file_path)
+    file_size = path.stat().st_size
+    range_header = request.headers.get("range") or request.headers.get("Range")
+
+    if not range_header or not range_header.startswith("bytes="):
+        return FileResponse(
+            file_path,
+            media_type="video/mp4",
+            filename=download_name,
+            headers={"Accept-Ranges": "bytes"},
+        )
+
+    try:
+        raw = range_header.split("=", 1)[1].split(",", 1)[0].strip()
+        start_s, _, end_s = raw.partition("-")
+        start = int(start_s) if start_s else 0
+        end = int(end_s) if end_s else file_size - 1
+    except ValueError:
+        raise HTTPException(status_code=416, detail="Invalid Range header")
+
+    if start >= file_size or end >= file_size or start > end:
+        raise HTTPException(
+            status_code=416,
+            detail="Requested Range Not Satisfiable",
+            headers={"Content-Range": f"bytes */{file_size}"},
+        )
+
+    length = end - start + 1
+
+    def iter_chunks():
+        with path.open("rb") as fh:
+            fh.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = fh.read(min(_RANGE_CHUNK_SIZE, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    headers = {
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(length),
+    }
+    return StreamingResponse(iter_chunks(), status_code=206, media_type="video/mp4", headers=headers)
+
+
 @app.get("/api/transactions/{txn_id}/video")
-async def get_transaction_video(txn_id: str):
+async def get_transaction_video(txn_id: str, request: Request):
     txn = _find_transaction(txn_id)
     if not txn or not txn.snippet_path or not Path(txn.snippet_path).exists():
         raise HTTPException(status_code=404, detail="Transaction clip not found")
-    return FileResponse(txn.snippet_path, media_type="video/mp4", filename=f"{txn_id}.mp4")
+    return _range_video_response(txn.snippet_path, request, f"{txn_id}.mp4")
 
 
 @app.get("/api/alerts")
@@ -543,11 +617,24 @@ async def list_alerts():
 
 
 @app.get("/api/alerts/{alert_id}/video")
-async def get_alert_video(alert_id: str):
+async def get_alert_video(alert_id: str, request: Request):
     alert = _find_alert(alert_id)
-    if not alert or not alert.snippet_path or not Path(alert.snippet_path).exists():
+    if not alert:
         raise HTTPException(status_code=404, detail="Alert clip not found")
-    return FileResponse(alert.snippet_path, media_type="video/mp4", filename=f"{alert_id}.mp4")
+
+    clip_path = alert.snippet_path
+    download_name = f"{alert_id}.mp4"
+
+    if (not clip_path or not Path(clip_path).exists()) and alert.transaction_id:
+        txn = _find_transaction(alert.transaction_id)
+        if txn and txn.snippet_path and Path(txn.snippet_path).exists():
+            clip_path = txn.snippet_path
+            download_name = f"{txn.id}.mp4"
+
+    if not clip_path or not Path(clip_path).exists():
+        raise HTTPException(status_code=404, detail="Alert clip not found")
+
+    return _range_video_response(clip_path, request, download_name)
 
 
 @app.post("/api/alerts/{alert_id}/resolve")
