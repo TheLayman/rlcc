@@ -78,5 +78,85 @@
         }
       ]
     }
+  },
+  {
+    "seller_window_id": "NDCIN1422_POS1",
+    "store_id": "NDCIN1422",
+    "pos_terminal_no": "POS 1",
+    "display_pos_label": "POS 1",
+    "camera_id": "cam-cafeniloufer-01",
+    "rtsp_url": "rtsp://kspoc:kspoc123@10.86.158.163/rtsp/defaultPrimary?streamType=u",
+    "xprotect_device_id": "",
+    "multi_pos": false,
+    "enabled": true,
+    "zones": {
+      "pos_zones": [
+        {
+          "zone_id": "POS1",
+          "seller_zone": [],
+          "bill_zone": []
+        }
+      ]
+    }
+  },
+  {
+    "seller_window_id": "NDCIN2082_POS1",
+    "store_id": "NDCIN2082",
+    "pos_terminal_no": "POS 1",
+    "display_pos_label": "POS 1",
+    "camera_id": "cam-krispykreme-01",
+    "rtsp_url": "rtsp://kspoc:kspoc123@10.86.158.196/rtsp/defaultPrimary?streamType=u",
+    "xprotect_device_id": "",
+    "multi_pos": false,
+    "enabled": true,
+    "zones": {
+      "pos_zones": [
+        {
+          "zone_id": "POS1",
+          "seller_zone": [],
+          "bill_zone": []
+        }
+      ]
+    }
+  },
+  {
+    "seller_window_id": "NDCIN2123_POS1",
+    "store_id": "NDCIN2123",
+    "pos_terminal_no": "POS 1",
+    "display_pos_label": "POS 1",
+    "camera_id": "cam-visitorgallery-01",
+    "rtsp_url": "rtsp://kspoc:kspoc123@10.86.158.168/rtsp/defaultPrimary?streamType=u",
+    "xprotect_device_id": "",
+    "multi_pos": false,
+    "enabled": true,
+    "zones": {
+      "pos_zones": [
+        {
+          "zone_id": "POS1",
+          "seller_zone": [],
+          "bill_zone": []
+        }
+      ]
+    }
+  },
+  {
+    "seller_window_id": "NDCIN2071_POS1",
+    "store_id": "NDCIN2071",
+    "pos_terminal_no": "POS 1",
+    "display_pos_label": "POS 1",
+    "camera_id": "cam-frankhotdog-01",
+    "rtsp_url": "rtsp://kspoc:kspoc123@10.86.158.230/rtsp/defaultPrimary?streamType=u",
+    "xprotect_device_id": "",
+    "multi_pos": false,
+    "enabled": true,
+    "zones": {
+      "pos_zones": [
+        {
+          "zone_id": "POS1",
+          "seller_zone": [],
+          "bill_zone": []
+        }
+      ]
+    }
   }
 ]
