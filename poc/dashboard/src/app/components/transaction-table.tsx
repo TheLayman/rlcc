@@ -1,4 +1,5 @@
 import { format } from 'date-fns';
+import { PlayCircle } from 'lucide-react';
 import {
   Table,
   TableBody,
@@ -8,6 +9,7 @@ import {
   TableRow,
 } from '@/app/components/ui/table';
 import { Badge } from '@/app/components/ui/badge';
+import { Button } from '@/app/components/ui/button';
 import { Transaction } from '@/lib/mock-data';
 
 interface TransactionTableProps {
@@ -39,8 +41,7 @@ export function TransactionTable({ transactions, onRowClick }: TransactionTableP
             <TableHead className="text-gray-600">Timestamp</TableHead>
             <TableHead className="text-right text-gray-600">Total</TableHead>
             <TableHead className="text-gray-600">Risk</TableHead>
-            <TableHead className="text-gray-600">Cam ID</TableHead>
-            <TableHead className="text-gray-600">POS ID</TableHead>
+            <TableHead className="text-right text-gray-600">Video</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -60,11 +61,24 @@ export function TransactionTable({ transactions, onRowClick }: TransactionTableP
                 {format(transaction.timestamp, 'MMM dd, yyyy HH:mm:ss')}
               </TableCell>
               <TableCell className="text-right font-mono text-gray-800">
-                {'\u20B9'}{transaction.transaction_total.toFixed(2)}
+                {'₹'}{transaction.transaction_total.toFixed(2)}
               </TableCell>
               <TableCell>{getRiskBadge(transaction.risk_level)}</TableCell>
-              <TableCell className="font-mono text-xs text-gray-400">{transaction.cam_id}</TableCell>
-              <TableCell className="font-mono text-xs text-gray-400">{transaction.pos_id}</TableCell>
+              <TableCell className="text-right">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 border-blue-200 text-blue-600 hover:bg-blue-50"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRowClick?.(transaction);
+                  }}
+                  title={transaction.clip_url ? 'Play tagged clip' : 'Open transaction — clip will load if available'}
+                >
+                  <PlayCircle className="h-4 w-4" />
+                  {transaction.clip_url ? 'Play' : 'View'}
+                </Button>
+              </TableCell>
             </TableRow>
           ))}
         </TableBody>
