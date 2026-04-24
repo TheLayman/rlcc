@@ -218,6 +218,7 @@
     "xprotect_device_id": "",
     "multi_pos": false,
     "enabled": true,
+    "match_any_pos_in_store": true,
     "zones": {
       "pos_zones": [
         {

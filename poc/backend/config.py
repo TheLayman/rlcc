@@ -69,6 +69,7 @@ class CameraEntry:
     multi_pos: bool
     pos_zones: list[PosZoneConfig]
     enabled: bool = True
+    match_any_pos_in_store: bool = False
 
     @property
     def normalized_terminal(self) -> str:
@@ -169,6 +170,7 @@ class Config:
                     multi_pos=bool(c.get("multi_pos", False)),
                     pos_zones=zones,
                     enabled=bool(c.get("enabled", True)),
+                    match_any_pos_in_store=bool(c.get("match_any_pos_in_store", False)),
                 )
             )
 
@@ -217,6 +219,7 @@ class Config:
                     "xprotect_device_id": c.xprotect_device_id,
                     "multi_pos": c.multi_pos,
                     "enabled": c.enabled,
+                    "match_any_pos_in_store": c.match_any_pos_in_store,
                     "zones": {
                         "pos_zones": [
                             {
@@ -254,6 +257,9 @@ class Config:
     def get_camera_by_terminal(self, store_id: str, pos_terminal_no: str) -> CameraEntry | None:
         for c in self.cameras:
             if c.enabled and c.matches_terminal(store_id, pos_terminal_no):
+                return c
+        for c in self.cameras:
+            if c.enabled and c.store_id == store_id and c.match_any_pos_in_store:
                 return c
         return None
 
