@@ -50,7 +50,7 @@ class VideoManager:
                 concat_file.write(f"file '{segment.as_posix()}'\n")
             concat_path = concat_file.name
 
-        cmd = [
+        base_cmd = [
             "ffmpeg",
             "-loglevel",
             "error",
@@ -70,19 +70,29 @@ class VideoManager:
             "-an",
             "-avoid_negative_ts",
             "make_zero",
+            "-movflags",
+            "+faststart",
+        ]
+        stream_copy_cmd = [*base_cmd, "-c", "copy", temp_output_path.as_posix()]
+        reencode_cmd = [
+            *base_cmd,
             "-c:v",
             "libx264",
             "-preset",
             "veryfast",
             "-pix_fmt",
             "yuv420p",
-            "-movflags",
-            "+faststart",
             temp_output_path.as_posix(),
         ]
 
         try:
-            subprocess.run(cmd, check=True)
+            try:
+                subprocess.run(stream_copy_cmd, check=True)
+            except subprocess.CalledProcessError:
+                # Stream copy can fail on non-keyframe-aligned boundaries.  Fall
+                # back to re-encoding so we still produce a clip, just slower.
+                temp_output_path.unlink(missing_ok=True)
+                subprocess.run(reencode_cmd, check=True)
             if not self.clip_exists(temp_output_path.as_posix()):
                 temp_output_path.unlink(missing_ok=True)
                 return ""
