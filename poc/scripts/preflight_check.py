@@ -71,12 +71,14 @@ STORES: list[Store] = [
           camera_ip="10.86.158.163",
           rtsp_url="rtsp://kspoc:kspoc123@10.86.158.163/rtsp/defaultPrimary?streamType=u"),
     Store(3,  "NSCIN10323", "Pulla Reddy Sweets",  "Retail Village",   "Retail", "Retail - Packaged Food",
-          camera_ip="10.86.158.71"),
+          camera_ip="10.86.158.71",
+          rtsp_url="rtsp://kspoc:kspoc123@10.86.158.71/rtsp/defaultPrimary?streamType=u"),
     Store(4,  "NSCIN8244",  "Enwrap",              "Fore Court",       "Retail", "Services - Baggage Wrapping",
           camera_ip="10.86.158.140",
           rtsp_url="rtsp://kspoc:kspoc123@10.86.158.140/rtsp/defaultPrimary?streamType=u"),
     Store(5,  "NSCIN10489", "Killer Jeans",        "Retail Village",   "Retail", "Retail - Apparels",
-          camera_ip="10.86.157.88"),
+          camera_ip="10.86.157.88",
+          rtsp_url="rtsp://kspoc:kspoc123@10.86.157.88/rtsp/defaultPrimary?streamType=u"),
     Store(6,  "NDCIN2082",  "Krispy Kreme",        "Aero Plaza",       "Dino",   "F&B - Bakery",
           camera_ip="10.86.158.196",
           rtsp_url="rtsp://kspoc:kspoc123@10.86.158.196/rtsp/defaultPrimary?streamType=u"),
@@ -116,15 +118,12 @@ def tcp_check(host: str, port: int, timeout: float = 3.0) -> tuple[bool, str]:
         return (False, f"TCP {host}:{port} {exc.__class__.__name__}: {exc}")
 
 
-def ffprobe_check(rtsp_url: str, timeout: float = 15.0) -> tuple[bool, str]:
-    if not shutil.which("ffprobe"):
-        return (False, "ffprobe not found in PATH (install ffmpeg to enable deep probe)")
-
-    cmd = [
-        "ffprobe",
-        "-v", "error",
-        "-rtsp_transport", "tcp",
-        "-stimeout", "10000000",
+def _ffprobe_once(rtsp_url: str, transport: str | None, timeout: float) -> tuple[bool, str]:
+    cmd = ["ffprobe", "-v", "error"]
+    if transport:
+        cmd += ["-rtsp_transport", transport]
+    cmd += [
+        "-rw_timeout", "10000000",
         "-timeout", "10000000",
         "-select_streams", "v:0",
         "-show_entries", "stream=codec_name,width,height,r_frame_rate",
@@ -132,33 +131,45 @@ def ffprobe_check(rtsp_url: str, timeout: float = 15.0) -> tuple[bool, str]:
         "-i", rtsp_url,
     ]
     try:
-        proc = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-            text=True,
-        )
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=timeout, text=True)
     except subprocess.TimeoutExpired:
-        return (False, f"ffprobe timeout after {timeout}s")
+        return (False, f"timeout after {timeout}s")
     except OSError as exc:
-        return (False, f"ffprobe failed: {exc}")
+        return (False, f"spawn failed: {exc}")
 
     if proc.returncode != 0:
-        err = (proc.stderr or "").strip().splitlines()
-        msg = err[-1] if err else f"exit {proc.returncode}"
-        return (False, f"ffprobe error: {msg}")
+        err_lines = [line.strip() for line in (proc.stderr or "").splitlines() if line.strip()]
+        msg = err_lines[-1] if err_lines else f"exit {proc.returncode}"
+        return (False, msg[:200])
 
     try:
         info = json.loads(proc.stdout or "{}")
         streams = info.get("streams") or []
         if not streams:
-            return (False, "ffprobe ok but no video stream reported")
+            return (False, "connected but no video stream reported")
         s = streams[0]
         desc = f"{s.get('codec_name','?')} {s.get('width','?')}x{s.get('height','?')} @ {s.get('r_frame_rate','?')}"
         return (True, f"video stream: {desc}")
     except json.JSONDecodeError:
-        return (True, "ffprobe ok (unparseable metadata)")
+        return (True, "ok (unparseable metadata)")
+
+
+def ffprobe_check(rtsp_url: str, timeout: float = 12.0) -> tuple[bool, str]:
+    if not shutil.which("ffprobe"):
+        return (False, "ffprobe not found in PATH (install ffmpeg to enable deep probe)")
+
+    attempts: list[tuple[str, str]] = []
+    # URL hints UDP via streamType=u; try UDP first, then TCP, then auto.
+    for transport in ("udp", "tcp", None):
+        ok, msg = _ffprobe_once(rtsp_url, transport, timeout)
+        label = transport or "auto"
+        if ok:
+            return (True, f"[{label}] {msg}")
+        attempts.append((label, msg))
+
+    joined = "; ".join(f"{label}: {msg}" for label, msg in attempts)
+    return (False, joined)
 
 
 def redact_rtsp(url: str) -> str:
@@ -430,7 +441,14 @@ def main() -> int:
             else:
                 tcp = "tcp=OK" if r["tcp_ok"] else "tcp=FAIL"
                 prob = "probe=OK" if r["probe_ok"] else "probe=FAIL"
-                line = f"{tcp}  {prob}"
+                extra = ""
+                if not r["probe_ok"]:
+                    # Truncate the multi-transport error string so the row stays readable.
+                    msg = r.get("probe_msg", "") or ""
+                    extra = f"  | {msg[:140]}" + ("..." if len(msg) > 140 else "")
+                elif r["probe_ok"]:
+                    extra = f"  | {r.get('probe_msg','')}"
+                line = f"{tcp}  {prob}{extra}"
             print(f"  [{pad(store.cin, 11)}] {pad(store.name, 22)} {line}")
     if sales_rows:
         print("\nSales API which variant returned data:")
