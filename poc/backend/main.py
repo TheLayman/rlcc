@@ -45,7 +45,7 @@ deps.settings = get_settings(POC_DIR / ".env")
 deps.config = Config(config_dir=str(CONFIG_DIR))
 deps.storage = Storage(data_dir=str(DATA_DIR))
 deps.assembler = TransactionAssembler()
-deps.fraud_engine = FraudEngine(deps.config.rules)
+deps.fraud_engine = FraudEngine(deps.config.rules, camera_config=deps.config)
 deps.ws_manager = ConnectionManager()
 deps.cv_consumer = CVConsumer(redis_url=deps.settings.redis_url)
 deps.video_manager = VideoManager(data_dir=DATA_DIR, retention_days=deps.settings.video_retention_days)
@@ -69,6 +69,15 @@ sales_sync_state = {
 
 def _parse_dt(value) -> datetime | None:
     return parse_record_dt(value)
+
+
+def _serialize_alert(alert: Alert) -> dict:
+    return serialize_alert(
+        alert,
+        deps.config,
+        video_manager=deps.video_manager,
+        video_buffer_minutes=deps.settings.video_buffer_minutes,
+    )
 
 
 def _load_transactions() -> list[TransactionSession]:
@@ -304,7 +313,7 @@ async def _ingest_polled_bills(bills: list[dict], *, mode: str) -> dict:
         for alert in alerts:
             deps.storage.append("alerts", alert.model_dump())
             new_alerts += 1
-            await deps.ws_manager.broadcast("NEW_ALERT", serialize_alert(alert, deps.config))
+            await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
 
     return {
         "mode": mode,
@@ -376,7 +385,7 @@ async def config_watcher():
         await asyncio.sleep(10)
         if deps.config.has_changed():
             deps.config.reload()
-            deps.fraud_engine = FraudEngine(deps.config.rules)
+            deps.fraud_engine = FraudEngine(deps.config.rules, camera_config=deps.config)
 
 
 async def expiry_checker():
@@ -425,7 +434,7 @@ async def expiry_checker():
                 source="expired_transaction",
             )
             deps.storage.append("alerts", alert.model_dump())
-            await deps.ws_manager.broadcast("NEW_ALERT", serialize_alert(alert, deps.config))
+            await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
 
 
 async def debug_broadcaster():
@@ -433,6 +442,7 @@ async def debug_broadcaster():
         await asyncio.sleep(3)
         await deps.ws_manager.broadcast("RAW_VAS_DATA", deps.cv_consumer.get_recent_signals())
         await deps.ws_manager.broadcast("RAW_POS_DATA", deps.storage.get_recent_pos_events())
+        await deps.ws_manager.broadcast("CV_ACTIVITY", deps.cv_consumer.get_recent_activity())
 
 
 def _build_missing_pos_alert(state: ActivityState, now: datetime) -> Alert | None:
@@ -498,7 +508,7 @@ async def missing_pos_checker():
 
             state.alert_emitted = True
             deps.storage.append("alerts", alert.model_dump())
-            await deps.ws_manager.broadcast("NEW_ALERT", serialize_alert(alert, deps.config))
+            await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
 
 
 async def snippet_cleanup():
@@ -736,7 +746,7 @@ async def get_transaction_video(txn_id: str, request: Request):
 @app.get("/api/alerts")
 async def list_alerts():
     alerts = _sort_alerts(_load_alerts())
-    return [serialize_alert(alert, deps.config) for alert in alerts]
+    return [_serialize_alert(alert) for alert in alerts]
 
 
 @app.get("/api/alerts/{alert_id}/video")
@@ -808,7 +818,7 @@ async def update_config(new_config: dict):
             merged[key] = value
     deps.config.rules = merged
     deps.config.save_rules()
-    deps.fraud_engine = FraudEngine(deps.config.rules)
+    deps.fraud_engine = FraudEngine(deps.config.rules, camera_config=deps.config)
     return {"ok": True, "config": merged}
 
 

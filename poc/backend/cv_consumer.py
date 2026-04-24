@@ -32,8 +32,11 @@ class CVConsumer:
         self._window_duration = 30
         self.latest: dict[str, dict] = {}
         self.recent_signals: deque[dict] = deque(maxlen=history_size)
+        self.recent_activity: deque[dict] = deque(maxlen=history_size)
+        self.latest_activity: dict[str, dict] = {}
         self.activity_states: dict[str, ActivityState] = {}
         self.last_signal_at: datetime | None = None
+        self.last_activity_at: datetime | None = None
 
     @staticmethod
     def window_key(camera_id: str, pos_zone: str) -> str:
@@ -48,20 +51,34 @@ class CVConsumer:
                 if not self.redis:
                     await self.connect()
                 pubsub = self.redis.pubsub()
-                await pubsub.psubscribe("cv:*")
+                await pubsub.psubscribe("cv:*", "activity:*")
                 async for message in pubsub.listen():
                     if message["type"] != "pmessage":
                         continue
                     try:
-                        signal = json.loads(message["data"])
+                        payload = json.loads(message["data"])
                         channel = message["channel"].decode("utf-8") if isinstance(message["channel"], bytes) else str(message["channel"])
-                        self._process_signal(signal, channel)
+                        if channel.startswith("activity:"):
+                            self._process_activity(payload, channel)
+                        else:
+                            self._process_signal(payload, channel)
                     except (json.JSONDecodeError, KeyError, ValueError):
                         continue
             except Exception as e:
                 print(f"[cv_consumer] Redis error: {e}, reconnecting in 5s...")
                 self.redis = None
                 await asyncio.sleep(5)
+
+    def _process_activity(self, payload: dict, channel: str):
+        parts = channel.split(":")
+        if len(parts) >= 3 and not payload.get("store_id"):
+            payload["store_id"] = parts[1]
+        camera_id = payload.get("camera_id", "")
+        zone_id = payload.get("pos_zone", "")
+        key = f"{camera_id}:{zone_id}" if zone_id else camera_id
+        self.latest_activity[key] = payload
+        self.recent_activity.appendleft(payload)
+        self.last_activity_at = datetime.now(timezone.utc)
 
     def _process_signal(self, signal: dict, channel: str):
         store_id = ""
@@ -195,13 +212,21 @@ class CVConsumer:
     def get_recent_signals(self) -> list[dict]:
         return list(self.recent_signals)
 
+    def get_recent_activity(self) -> list[dict]:
+        return list(self.recent_activity)
+
+    def get_latest_activity(self) -> dict[str, dict]:
+        return dict(self.latest_activity)
+
     def get_health(self) -> dict:
         return {
             "redis_url": self.redis_url,
             "connected": self.redis is not None,
             "last_signal_at": self.last_signal_at.isoformat() if self.last_signal_at else None,
+            "last_activity_at": self.last_activity_at.isoformat() if self.last_activity_at else None,
             "camera_count": len(self.latest),
-            "active_activity_sessions": sum(1 for state in self.activity_states.values() if state.active),
+            "active_copresence_sessions": sum(1 for state in self.activity_states.values() if state.active),
+            "recent_activity_count": len(self.recent_activity),
         }
 
     def prune_inactive_states(self, stale_after_seconds: int = 15):

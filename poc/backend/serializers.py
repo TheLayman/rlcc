@@ -1,9 +1,85 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Any
 
 from backend.config import Config
 from backend.models import Alert, TransactionSession
+
+
+CLIP_STATUS_AVAILABLE = "available"
+CLIP_STATUS_PENDING = "pending"
+CLIP_STATUS_OUTSIDE_BUFFER = "outside_buffer"
+CLIP_STATUS_CAMERA_UNMAPPED = "camera_unmapped"
+CLIP_STATUS_RETENTION_EXPIRED = "retention_expired"
+CLIP_STATUS_NOT_RECORDED = "not_recorded"
+CLIP_STATUS_UNKNOWN = "unknown"
+
+
+def _humanize_duration(seconds: float) -> str:
+    if seconds < 0:
+        seconds = 0.0
+    days = seconds / 86400
+    if days >= 1:
+        return f"{int(days)}d"
+    hours = seconds / 3600
+    if hours >= 1:
+        return f"{int(hours)}h"
+    return f"{max(int(seconds / 60), 1)}m"
+
+
+def _coerce_datetime(value: Any) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def compute_alert_clip_status(
+    alert: Alert,
+    config: Config,
+    *,
+    video_manager: Any = None,
+    video_buffer_minutes: int = 0,
+) -> tuple[str, str]:
+    """Return (status_code, human_readable_reason) for the alert's clip."""
+    if alert.snippet_path and video_manager is not None and video_manager.clip_exists(alert.snippet_path):
+        return CLIP_STATUS_AVAILABLE, ""
+
+    if alert.snippet_path:
+        return CLIP_STATUS_RETENTION_EXPIRED, "Clip file is missing (retention cleanup or purge)"
+
+    if not alert.camera_id:
+        camera = None
+        if alert.pos_terminal_no:
+            camera = config.get_camera_by_terminal(alert.store_id, alert.pos_terminal_no)
+        if not camera:
+            pos_label = alert.display_pos_label or alert.pos_terminal_no or "unknown POS"
+            store_label = config.get_store_name(alert.store_id) or alert.store_id or "unknown store"
+            return CLIP_STATUS_CAMERA_UNMAPPED, f"No camera mapped for {pos_label} at {store_label}"
+
+    alert_ts = _coerce_datetime(alert.timestamp)
+    if alert_ts is not None and video_buffer_minutes > 0:
+        now = datetime.now(timezone.utc)
+        age_seconds = (now - alert_ts).total_seconds()
+        buffer_seconds = video_buffer_minutes * 60
+        if age_seconds > buffer_seconds:
+            return (
+                CLIP_STATUS_OUTSIDE_BUFFER,
+                f"Older than RTSP buffer ({_humanize_duration(age_seconds)} old, buffer keeps {video_buffer_minutes}m)",
+            )
+        if age_seconds < 60:
+            return CLIP_STATUS_PENDING, "Clip still being extracted (just recorded)"
+
+    return (
+        CLIP_STATUS_NOT_RECORDED,
+        "CV recorder did not produce footage for this window (recorder offline or ffmpeg failed)",
+    )
 
 
 def transaction_total(txn: TransactionSession) -> float:
@@ -71,7 +147,19 @@ def serialize_transaction(txn: TransactionSession, config: Config) -> dict:
     }
 
 
-def serialize_alert(alert: Alert, config: Config) -> dict:
+def serialize_alert(
+    alert: Alert,
+    config: Config,
+    *,
+    video_manager: Any = None,
+    video_buffer_minutes: int = 0,
+) -> dict:
+    clip_status, clip_reason = compute_alert_clip_status(
+        alert,
+        config,
+        video_manager=video_manager,
+        video_buffer_minutes=video_buffer_minutes,
+    )
     return {
         "id": alert.id,
         "transaction_id": alert.transaction_id or "N/A",
@@ -85,6 +173,8 @@ def serialize_alert(alert: Alert, config: Config) -> dict:
         "cam_id": alert.camera_id,
         "pos_id": alert.display_pos_label or alert.pos_terminal_no,
         "clip_url": clip_url_for_alert(alert),
+        "clip_status": clip_status,
+        "clip_reason": clip_reason,
         "remarks": alert.remarks or "",
         "source": alert.source,
     }

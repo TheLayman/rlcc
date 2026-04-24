@@ -3,7 +3,7 @@ import { format } from 'date-fns';
 import { AlertTriangle, CheckCircle, Clock, Search as SearchIcon, Video } from 'lucide-react';
 import { toast } from 'sonner';
 
-import { Alert, Transaction } from '@/lib/mock-data';
+import { Alert, ClipStatus, Transaction } from '@/lib/mock-data';
 import { Badge } from '@/app/components/ui/badge';
 import { Button } from '@/app/components/ui/button';
 import { Card } from '@/app/components/ui/card';
@@ -24,19 +24,53 @@ interface AlertWorkflowProps {
   onOpenTransaction?: (alert: Alert) => void;
 }
 
+const CLIP_FILTER_OPTIONS: { value: string; label: string }[] = [
+  { value: 'all', label: 'Any clip state' },
+  { value: 'with_clip', label: 'With clip' },
+  { value: 'no_clip', label: 'No clip (any reason)' },
+  { value: 'pending', label: 'Clip pending' },
+  { value: 'outside_buffer', label: 'Outside buffer' },
+  { value: 'camera_unmapped', label: 'Camera unmapped' },
+  { value: 'not_recorded', label: 'Not recorded' },
+  { value: 'retention_expired', label: 'Retention expired' },
+];
+
+function clipStatusLabel(status: ClipStatus): string {
+  switch (status) {
+    case 'pending': return 'Clip pending';
+    case 'outside_buffer': return 'Outside buffer';
+    case 'camera_unmapped': return 'Camera unmapped';
+    case 'retention_expired': return 'Retention expired';
+    case 'not_recorded': return 'Not recorded';
+    default: return 'Clip unavailable';
+  }
+}
+
 export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransaction }: AlertWorkflowProps) {
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [clipFilter, setClipFilter] = useState<string>('all');
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
   const [remarks, setRemarks] = useState('');
   const [newStatus, setNewStatus] = useState('');
 
+  const alertHasClip = (alert: Alert) => {
+    if (alert.clip_url) return true;
+    const linked = transactions.find(txn => txn.id === alert.transaction_id);
+    return Boolean(linked?.clip_url);
+  };
+
   const filteredAlerts = useMemo(() => {
-    if (statusFilter === 'all') return alerts;
-    if (statusFilter === 'open') return alerts.filter(a => ['new', 'Fraudulent', 'Pending for review'].includes(a.status));
-    if (statusFilter === 'investigating') return alerts.filter(a => a.status === 'reviewing');
-    if (statusFilter === 'closed') return alerts.filter(a => ['resolved', 'Genuine'].includes(a.status));
-    return alerts;
-  }, [alerts, statusFilter]);
+    let result = alerts;
+    if (statusFilter === 'open') result = result.filter(a => ['new', 'Fraudulent', 'Pending for review'].includes(a.status));
+    else if (statusFilter === 'investigating') result = result.filter(a => a.status === 'reviewing');
+    else if (statusFilter === 'closed') result = result.filter(a => ['resolved', 'Genuine'].includes(a.status));
+
+    if (clipFilter === 'with_clip') result = result.filter(a => alertHasClip(a));
+    else if (clipFilter === 'no_clip') result = result.filter(a => !alertHasClip(a));
+    else if (clipFilter !== 'all') result = result.filter(a => (a.clip_status || 'unknown') === clipFilter);
+
+    return result;
+  }, [alerts, statusFilter, clipFilter, transactions]);
 
   const summary = useMemo(() => {
     const open = alerts.filter(a => ['new', 'Fraudulent', 'Pending for review'].includes(a.status)).length;
@@ -122,11 +156,23 @@ export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransacti
       </div>
 
       <Card className="bg-white border-gray-200 shadow-sm">
-        <div className="p-4 border-b border-gray-200 flex items-center justify-between">
+        <div className="p-4 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-lg font-semibold text-gray-800">Alert Management</h3>
-          <Badge variant="outline" className="text-gray-500">
-            {filteredAlerts.length} {statusFilter === 'all' ? 'total' : statusFilter}
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Select value={clipFilter} onValueChange={setClipFilter}>
+              <SelectTrigger className="w-[180px] bg-white border-gray-200 h-9 text-xs">
+                <SelectValue placeholder="Clip filter" />
+              </SelectTrigger>
+              <SelectContent>
+                {CLIP_FILTER_OPTIONS.map(option => (
+                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Badge variant="outline" className="text-gray-500">
+              {filteredAlerts.length} {statusFilter === 'all' && clipFilter === 'all' ? 'total' : 'filtered'}
+            </Badge>
+          </div>
         </div>
 
         <div className="divide-y divide-gray-100 max-h-[600px] overflow-y-auto">
@@ -140,8 +186,7 @@ export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransacti
               const txn = getTransaction(alert.transaction_id);
               const isSelected = selectedAlertId === alert.id;
               const clipUrl = alert.clip_url ? `${BACKEND_BASE}${alert.clip_url}` : txn?.clip_url ? `${BACKEND_BASE}${txn.clip_url}` : null;
-              const hasTransactionReference = Boolean(alert.transaction_id && alert.transaction_id !== 'N/A');
-              const canOpenFootage = Boolean(onOpenTransaction && (clipUrl || hasTransactionReference));
+              const hasClip = Boolean(clipUrl);
 
               return (
                 <div key={alert.id} className={`p-4 ${isSelected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
@@ -173,29 +218,41 @@ export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransacti
                             {alert.remarks}
                           </div>
                         )}
+                        {!hasClip && alert.clip_reason && (
+                          <div className="mt-2 rounded-md border border-amber-100 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">
+                            Why no clip: {alert.clip_reason}
+                          </div>
+                        )}
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={!canOpenFootage}
-                        onClick={() => onOpenTransaction?.(alert)}
-                        className={`gap-1 border-gray-200 text-xs ${canOpenFootage ? 'text-blue-600 hover:bg-blue-50' : 'text-gray-400 cursor-not-allowed'}`}
-                      >
-                        <Video className="h-3 w-3" />
-                        Footage
-                      </Button>
-                      {['new', 'Fraudulent', 'Pending for review', 'reviewing'].includes(alert.status) && (
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <div className="flex items-center gap-2">
                         <Button
                           variant="outline"
                           size="sm"
-                          className="border-blue-200 text-blue-600 hover:bg-blue-50"
-                          onClick={() => setSelectedAlertId(isSelected ? null : alert.id)}
+                          onClick={() => onOpenTransaction?.(alert)}
+                          className={`gap-1 border-gray-200 text-xs ${hasClip ? 'text-blue-600 hover:bg-blue-50' : 'text-gray-500 hover:bg-gray-50'}`}
+                          title={hasClip ? 'Play alert footage' : alert.clip_reason || 'Open alert — clip will load when available'}
                         >
-                          {isSelected ? 'Cancel' : 'Resolve'}
+                          <Video className="h-3 w-3" />
+                          {hasClip ? 'Play Video' : 'View Footage'}
                         </Button>
+                        {['new', 'Fraudulent', 'Pending for review', 'reviewing'].includes(alert.status) && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="border-blue-200 text-blue-600 hover:bg-blue-50"
+                            onClick={() => setSelectedAlertId(isSelected ? null : alert.id)}
+                          >
+                            {isSelected ? 'Cancel' : 'Resolve'}
+                          </Button>
+                        )}
+                      </div>
+                      {!hasClip && (
+                        <span className="text-[10px] uppercase tracking-wide text-amber-700">
+                          {clipStatusLabel(alert.clip_status || 'unknown')}
+                        </span>
                       )}
                     </div>
                   </div>

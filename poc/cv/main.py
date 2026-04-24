@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from backend.config import CameraEntry, Config, PosZoneConfig, ZONE_POLYGON_FIELDS, get_zone_polygon_value
 from backend.settings import get_settings
+from cv.activity import ACTIVITY_IDLE, SellerActivityClassifier
 
 try:
     import cv2
@@ -78,6 +79,13 @@ class CameraState:
     recorder: subprocess.Popen | None = None
     running: bool = False
     frame_count: int = 0
+    last_seller_at: dict[str, datetime] = field(default_factory=dict)
+    last_non_seller_at: datetime | None = None
+    zone_copresence_start: dict[str, datetime] = field(default_factory=dict)
+    bill_prev_frames: dict[str, np.ndarray | None] = field(default_factory=dict)
+    bill_baselines: dict[str, np.ndarray | None] = field(default_factory=dict)
+    activity_last_published_at: dict[str, datetime] = field(default_factory=dict)
+    activity_last_label: dict[str, str] = field(default_factory=dict)
 
 
 class CVRuntime:
@@ -92,6 +100,14 @@ class CVRuntime:
         self.threads: list[threading.Thread] = []
         self.detector = self._load_detector()
         self.detector_name = self.detector.__class__.__name__ if self.detector is not None else "disabled"
+        self.activity_classifier = SellerActivityClassifier()
+
+    def _rule(self, key: str, default: float) -> float:
+        value = self.config.rules.get(key, default)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
 
     def _build_states(self) -> dict[str, CameraState]:
         return {
@@ -166,9 +182,6 @@ class CVRuntime:
         state = self.states[camera_id]
         camera = state.camera
         capture = None
-        frame_index = 0
-        previous_bill_crops: dict[str, np.ndarray | None] = {zone.zone_id: None for zone in camera.pos_zones}
-        last_people: list[tuple[int, int, int, int]] = []
 
         if cv2 is None:
             state.last_error = "opencv-python-headless is not installed"
@@ -184,11 +197,19 @@ class CVRuntime:
             state.last_error = "RTSP URL not configured"
 
         while not self.stop_event.is_set():
+            loop_started = time.monotonic()
+            target_fps = max(self._rule("cv_target_fps", 5.0), 1.0)
+            target_interval = 1.0 / target_fps
+
             frame = None
             if capture is not None and capture.isOpened():
                 ok, raw = capture.read()
                 if ok and raw is not None:
                     frame = raw
+                    if state.source_mode != "rtsp":
+                        state.source_mode = "rtsp"
+                    if state.last_error in ("RTSP frame read failed", "Could not open RTSP stream"):
+                        state.last_error = None
                 else:
                     state.last_error = "RTSP frame read failed"
 
@@ -196,11 +217,10 @@ class CVRuntime:
                 frame = self._placeholder_frame(camera, state.last_error or "Waiting for live stream")
                 state.source_mode = "placeholder"
 
-            if frame_index % 3 == 0:
-                last_people = self._detect_people(frame)
-
-            signal = self._build_signal(camera, frame, last_people, previous_bill_crops)
-            annotated = self._annotate(frame.copy(), camera, signal, last_people)
+            people = self._detect_people(frame)
+            signal = self._build_signal(camera, state, frame, people)
+            self._maybe_publish_activity(camera, state, frame, people, signal)
+            annotated = self._annotate(frame.copy(), camera, signal, people)
             encoded = self._encode_frame(annotated)
 
             with self.lock:
@@ -212,13 +232,17 @@ class CVRuntime:
 
             try:
                 self.redis.publish(f"cv:{camera.store_id}:{camera.camera_id}", self._json(signal))
+                if state.last_error == "Failed to publish CV signal to Redis":
+                    state.last_error = None
             except Exception:
                 with self.lock:
                     state.last_error = "Failed to publish CV signal to Redis"
 
             self._prune_buffer(camera.camera_id)
-            frame_index += 1
-            time.sleep(0.5)
+
+            elapsed = time.monotonic() - loop_started
+            sleep_for = max(0.01, target_interval - elapsed)
+            time.sleep(sleep_for)
 
         if capture is not None:
             capture.release()
@@ -294,41 +318,89 @@ class CVRuntime:
         except Exception:
             return []
 
+    @staticmethod
+    def _feet_point(bbox: tuple[int, int, int, int]) -> tuple[int, int]:
+        x1, _y1, x2, y2 = bbox
+        return ((x1 + x2) // 2, y2)
+
+    @staticmethod
+    def _bbox_overlaps_polygon(
+        bbox: tuple[int, int, int, int],
+        polygon: np.ndarray,
+    ) -> bool:
+        if cv2 is None:
+            return False
+        x1, y1, x2, y2 = bbox
+        sample_points = [
+            ((x1 + x2) // 2, y2),                 # feet
+            ((x1 + x2) // 2, (y1 + y2) // 2),     # center
+            (x1, y2),
+            (x2, y2),
+            ((x1 + x2) // 2, (y2 + (y1 + y2) // 2) // 2),
+        ]
+        for point in sample_points:
+            if cv2.pointPolygonTest(polygon, point, False) >= 0:
+                return True
+        return False
+
+    def _person_in_zone(
+        self,
+        bbox: tuple[int, int, int, int],
+        polygon_points: list[list[int]],
+    ) -> bool:
+        if cv2 is None or not polygon_points:
+            return False
+        polygon = np.array(polygon_points, dtype=np.int32)
+        if cv2.pointPolygonTest(polygon, self._feet_point(bbox), False) >= 0:
+            return True
+        return self._bbox_overlaps_polygon(bbox, polygon)
+
     def _build_signal(
         self,
         camera: CameraEntry,
+        state: CameraState,
         frame: np.ndarray,
         people: list[tuple[int, int, int, int]],
-        previous_bill_crops: dict[str, np.ndarray | None],
     ) -> dict:
-        zones = []
-        customer_count = 0
+        now = datetime.now(timezone.utc)
+        hold_seconds = self._rule("seller_hold_seconds", 3.0)
 
-        seller_polygons = [np.array(zone.seller_zone, dtype=np.int32) for zone in camera.pos_zones if zone.seller_zone]
-        person_centers = [((x1 + x2) // 2, (y1 + y2) // 2) for x1, y1, x2, y2 in people]
+        seller_zone_map = {
+            zone.zone_id: zone.seller_zone
+            for zone in camera.pos_zones
+            if zone.seller_zone
+        }
 
-        def inside_any_seller(point: tuple[int, int]) -> bool:
-            if cv2 is None:
-                return False
-            for polygon in seller_polygons:
-                if cv2.pointPolygonTest(polygon, point, False) >= 0:
-                    return True
-            return False
+        observed_non_seller_count = 0
+        for bbox in people:
+            inside_any_seller = any(
+                self._person_in_zone(bbox, poly) for poly in seller_zone_map.values()
+            )
+            if not inside_any_seller:
+                observed_non_seller_count += 1
 
-        for point in person_centers:
-            if not inside_any_seller(point):
-                customer_count += 1
+        if observed_non_seller_count > 0:
+            state.last_non_seller_at = now
 
+        zones_payload: list[dict[str, Any]] = []
         for zone in camera.pos_zones:
-            seller_present = False
-            for point in person_centers:
-                if zone.seller_zone and cv2 is not None and cv2.pointPolygonTest(
-                    np.array(zone.seller_zone, dtype=np.int32), point, False
-                ) >= 0:
-                    seller_present = True
-                    break
-            bill_motion, bill_bg = self._bill_zone_status(frame, zone, previous_bill_crops)
-            zones.append(
+            raw_seller_present = any(
+                self._person_in_zone(bbox, zone.seller_zone) for bbox in people
+            ) if zone.seller_zone else False
+
+            if raw_seller_present:
+                state.last_seller_at[zone.zone_id] = now
+
+            last_seen = state.last_seller_at.get(zone.zone_id)
+            held_seller = False
+            if last_seen is not None:
+                held_seller = (now - last_seen).total_seconds() <= hold_seconds
+
+            seller_present = bool(raw_seller_present or held_seller)
+
+            bill_motion, bill_bg = self._bill_zone_status(frame, state, zone)
+
+            zones_payload.append(
                 {
                     "pos_zone": zone.zone_id,
                     "seller": seller_present,
@@ -337,35 +409,164 @@ class CVRuntime:
                 }
             )
 
+        held_non_seller_count = observed_non_seller_count
+        non_seller_held = False
+        if observed_non_seller_count == 0 and state.last_non_seller_at is not None:
+            if (now - state.last_non_seller_at).total_seconds() <= hold_seconds:
+                held_non_seller_count = 1
+                non_seller_held = True
+
         return {
             "ts": iso_now(),
             "store_id": camera.store_id,
             "camera_id": camera.camera_id,
-            "zones": zones,
-            "non_seller_count": customer_count,
-            "non_seller_present": customer_count > 0,
+            "zones": zones_payload,
+            "non_seller_count": held_non_seller_count,
+            "non_seller_present": held_non_seller_count > 0,
+            "non_seller_held": non_seller_held,
         }
 
     def _bill_zone_status(
         self,
         frame: np.ndarray,
+        state: CameraState,
         zone: PosZoneConfig,
-        previous_bill_crops: dict[str, np.ndarray | None],
     ) -> tuple[bool, bool]:
+        """Compute bill_motion (pixel-change pct vs previous frame) and
+        bill_bg (pixel-change pct vs learned EMA baseline).  The baseline
+        pauses updating whenever motion is detected so it learns the idle
+        scene only.
+        """
         if cv2 is None or not zone.bill_zone:
             return False, False
         x1, y1, x2, y2 = _polygon_bbox(zone.bill_zone)
-        crop = frame[max(y1, 0):max(y2, 0), max(x1, 0):max(x2, 0)]
+        x1 = max(x1, 0)
+        y1 = max(y1, 0)
+        x2 = max(x2, 0)
+        y2 = max(y2, 0)
+        crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             return False, False
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        previous = previous_bill_crops.get(zone.zone_id)
-        previous_bill_crops[zone.zone_id] = gray
-        if previous is None or previous.shape != gray.shape:
-            return False, False
-        diff = cv2.absdiff(gray, previous)
-        mean_diff = float(np.mean(diff))
-        return mean_diff > 8.0, mean_diff > 18.0
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
+
+        pixel_delta = self._rule("bill_motion_pixel_delta", 20.0)
+        motion_threshold = self._rule("bill_motion_pct_threshold", 2.0)
+        bg_threshold = self._rule("bill_bg_pct_threshold", 3.0)
+        ema_alpha = min(max(self._rule("bill_bg_ema_alpha", 0.05), 0.0), 1.0)
+
+        previous = state.bill_prev_frames.get(zone.zone_id)
+        state.bill_prev_frames[zone.zone_id] = gray
+
+        motion_pct = 0.0
+        if previous is not None and previous.shape == gray.shape:
+            diff = np.abs(gray - previous)
+            changed = int(np.count_nonzero(diff > pixel_delta))
+            motion_pct = 100.0 * changed / diff.size
+
+        bill_motion = motion_pct > motion_threshold
+
+        baseline = state.bill_baselines.get(zone.zone_id)
+        if baseline is None or baseline.shape != gray.shape:
+            state.bill_baselines[zone.zone_id] = gray.copy()
+            return bill_motion, False
+
+        bg_diff = np.abs(gray - baseline)
+        bg_changed = int(np.count_nonzero(bg_diff > pixel_delta))
+        bg_pct = 100.0 * bg_changed / bg_diff.size
+        bill_bg = bg_pct > bg_threshold
+
+        if not bill_motion:
+            state.bill_baselines[zone.zone_id] = (
+                (1.0 - ema_alpha) * baseline + ema_alpha * gray
+            ).astype(np.float32)
+
+        return bill_motion, bill_bg
+
+    def _maybe_publish_activity(
+        self,
+        camera: CameraEntry,
+        state: CameraState,
+        frame: np.ndarray,
+        people: list[tuple[int, int, int, int]],
+        signal: dict[str, Any],
+    ) -> None:
+        if not self.activity_classifier.enabled:
+            return
+        if not signal.get("non_seller_present"):
+            for zone in camera.pos_zones:
+                state.zone_copresence_start.pop(zone.zone_id, None)
+            return
+
+        trigger_seconds = self._rule("activity_trigger_seconds", 15.0)
+        activity_fps = max(self._rule("activity_fps", 2.0), 0.5)
+        activity_interval = 1.0 / activity_fps
+        now = datetime.now(timezone.utc)
+
+        zone_signal_by_id = {entry["pos_zone"]: entry for entry in signal.get("zones", [])}
+
+        for zone in camera.pos_zones:
+            zone_signal = zone_signal_by_id.get(zone.zone_id)
+            if not zone_signal or not zone_signal.get("seller"):
+                state.zone_copresence_start.pop(zone.zone_id, None)
+                continue
+
+            started_at = state.zone_copresence_start.get(zone.zone_id)
+            if started_at is None:
+                state.zone_copresence_start[zone.zone_id] = now
+                continue
+
+            dwell = (now - started_at).total_seconds()
+            if dwell < trigger_seconds:
+                continue
+
+            last_published = state.activity_last_published_at.get(zone.zone_id)
+            if last_published is not None and (now - last_published).total_seconds() < activity_interval:
+                continue
+
+            seller_bbox = self._select_seller_bbox(zone.seller_zone, people)
+            if seller_bbox is None:
+                continue
+
+            label, confidence = self.activity_classifier.classify(frame, seller_bbox, zone)
+            state.activity_last_published_at[zone.zone_id] = now
+            state.activity_last_label[zone.zone_id] = label
+
+            payload = {
+                "ts": iso_now(),
+                "store_id": camera.store_id,
+                "camera_id": camera.camera_id,
+                "pos_zone": zone.zone_id,
+                "seller_activity": label,
+                "confidence": round(float(confidence), 3),
+                "copresence_seconds": round(dwell, 1),
+            }
+
+            try:
+                self.redis.publish(
+                    f"activity:{camera.store_id}:{camera.camera_id}", self._json(payload)
+                )
+            except Exception:
+                with self.lock:
+                    state.last_error = "Failed to publish CV activity signal to Redis"
+
+    def _select_seller_bbox(
+        self,
+        seller_zone_points: list[list[int]],
+        people: list[tuple[int, int, int, int]],
+    ) -> tuple[int, int, int, int] | None:
+        if not seller_zone_points:
+            return None
+        best_bbox: tuple[int, int, int, int] | None = None
+        best_area = -1
+        for bbox in people:
+            if not self._person_in_zone(bbox, seller_zone_points):
+                continue
+            x1, y1, x2, y2 = bbox
+            area = max(0, x2 - x1) * max(0, y2 - y1)
+            if area > best_area:
+                best_area = area
+                best_bbox = bbox
+        return best_bbox
 
     def _annotate(
         self,

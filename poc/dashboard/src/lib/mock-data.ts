@@ -65,6 +65,7 @@ export interface Transaction {
   transaction_type?: string;
   employee_purchase?: boolean;
   clip_url?: string | null;
+  clip_reason?: string;
   timeline_url?: string;
   receipt_status?: 'generated' | 'not_generated' | 'unknown';
   items?: SaleLine[];
@@ -76,6 +77,15 @@ export interface Transaction {
   cv_receipt_detected?: boolean | null;
   cv_confidence?: string;
 }
+
+export type ClipStatus =
+  | 'available'
+  | 'pending'
+  | 'outside_buffer'
+  | 'camera_unmapped'
+  | 'retention_expired'
+  | 'not_recorded'
+  | 'unknown';
 
 export interface Alert {
   id: string;
@@ -90,6 +100,8 @@ export interface Alert {
   cam_id?: string;
   pos_id?: string;
   clip_url?: string | null;
+  clip_status?: ClipStatus;
+  clip_reason?: string;
   remarks?: string;
   source?: string;
 }

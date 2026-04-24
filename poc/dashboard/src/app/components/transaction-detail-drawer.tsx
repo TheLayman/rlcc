@@ -303,8 +303,15 @@ export function TransactionDetailDrawer({ transaction, billData, open, onClose }
                 )}
               </div>
             ) : (
-              <div className="text-center py-4 text-sm text-gray-400 border border-dashed border-gray-200 rounded-lg">
-                Clip not available for this transaction yet
+              <div className="py-4 px-4 border border-dashed border-gray-200 rounded-lg">
+                <div className="text-center text-sm text-gray-400">
+                  Clip not available for this transaction yet
+                </div>
+                {transaction.clip_reason && (
+                  <div className="mt-2 rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    <span className="font-medium">Why no clip:</span> {transaction.clip_reason}
+                  </div>
+                )}
               </div>
             )}
             <div className="mt-4 space-y-2 max-h-72 overflow-auto">

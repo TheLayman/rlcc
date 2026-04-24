@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+from backend.config import Config, normalize_terminal
 from backend.models import Alert, TransactionSession
 
 
@@ -38,8 +39,9 @@ def _get_total(txn: TransactionSession, attribute: str) -> Optional[float]:
 
 
 class FraudEngine:
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, camera_config: Optional[Config] = None) -> None:
         self._config = config
+        self._camera_config = camera_config
         self._rules_cfg: dict = config.get("rules", {})
         # thresholds
         self._discount_pct: float = float(config.get("discount_threshold_percent", 20))
@@ -50,6 +52,20 @@ class FraudEngine:
         self._feed_down_minutes: int = int(config.get("feed_down_minutes", 10))
         # feed-down tracking: store_id -> last event datetime
         self._last_event: dict[str, datetime] = {}
+
+    def _has_bill_zone_coverage(self, txn: TransactionSession) -> bool:
+        if not self._camera_config or not txn.camera_id:
+            return False
+        camera = self._camera_config.get_camera_by_id(txn.camera_id)
+        if not camera:
+            return False
+        target_zone = normalize_terminal(txn.pos_terminal_no)
+        for zone in camera.pos_zones:
+            if zone.normalized_zone_id == target_zone and zone.bill_zone:
+                return True
+        if camera.pos_zones and camera.pos_zones[0].bill_zone:
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Feed-down helpers
@@ -233,8 +249,15 @@ class FraudEngine:
             self._trigger(txn, "28_drawer_no_customer")
 
     def _rule_29_bill_not_generated(self, txn: TransactionSession) -> None:
-        if txn.status == "committed" and txn.cv_receipt_detected is False:
-            self._trigger(txn, "29_bill_not_generated")
+        if txn.status != "committed":
+            return
+        if txn.cv_receipt_detected is not False:
+            return
+        if txn.cv_confidence != "HIGH":
+            return
+        if not self._has_bill_zone_coverage(txn):
+            return
+        self._trigger(txn, "29_bill_not_generated")
 
     # ------------------------------------------------------------------
     # Main evaluate method

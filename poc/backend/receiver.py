@@ -15,6 +15,15 @@ from backend.serializers import serialize_alert, serialize_transaction
 router = APIRouter()
 
 
+def _serialize_alert(alert: Alert) -> dict:
+    return serialize_alert(
+        alert,
+        deps.config,
+        video_manager=deps.video_manager,
+        video_buffer_minutes=deps.settings.video_buffer_minutes,
+    )
+
+
 def _parse_payload(raw_body: bytes) -> tuple[dict | None, str | None]:
     try:
         body_text = raw_body.decode("utf-8")
@@ -187,7 +196,7 @@ async def receive_event(request: Request):
             if _persist_committed_transaction(txn, alerts):
                 await deps.ws_manager.broadcast("NEW_TRANSACTION", serialize_transaction(txn, deps.config))
                 for alert in alerts:
-                    await deps.ws_manager.broadcast("NEW_ALERT", serialize_alert(alert, deps.config))
+                    await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
 
     elif event_type == "BillReprint":
         event_ts = _parse_ts(payload.get("transactionTimeStamp"))
@@ -212,7 +221,7 @@ async def receive_event(request: Request):
             source="bill_reprint",
         )
         deps.storage.append("alerts", alert.model_dump())
-        await deps.ws_manager.broadcast("NEW_ALERT", serialize_alert(alert, deps.config))
+        await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
 
     await _broadcast_raw_pos()
     return {"status": 200, "message": "Success", "event": event_type}

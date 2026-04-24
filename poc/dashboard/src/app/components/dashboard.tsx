@@ -230,6 +230,7 @@ export function Dashboard() {
             pos_id: payload.transaction.pos_id || alert.pos_id || '',
             cashier_name: payload.transaction.cashier_name || alert.cashier_name,
             clip_url: payload.transaction.clip_url || alert.clip_url,
+            clip_reason: payload.transaction.clip_url ? undefined : alert.clip_reason,
             timestamp: new Date(payload.transaction.timestamp),
           };
           setSelectedTransaction(detailed);
@@ -254,6 +255,7 @@ export function Dashboard() {
       triggered_rules: alert.triggered_rules,
       status: alert.status,
       clip_url: alert.clip_url,
+      clip_reason: alert.clip_reason,
     };
     setSelectedTransaction(synthetic);
     setDrawerOpen(true);

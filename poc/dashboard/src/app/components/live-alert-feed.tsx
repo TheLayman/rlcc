@@ -3,16 +3,17 @@ import { format } from 'date-fns';
 import { Card } from '@/app/components/ui/card';
 import { Badge } from '@/app/components/ui/badge';
 import { Button } from '@/app/components/ui/button';
-import { Bell, AlertTriangle, Eye, X } from 'lucide-react';
+import { Bell, AlertTriangle, Eye, PlayCircle, X } from 'lucide-react';
 import { Alert } from '@/lib/mock-data';
 
 interface LiveAlertFeedProps {
   alerts: Alert[];
   onViewAlert: (transactionId: string) => void;
+  onPlayVideo?: (alert: Alert) => void;
   onDismissAlert: (alertId: string) => void;
 }
 
-export function LiveAlertFeed({ alerts, onViewAlert, onDismissAlert }: LiveAlertFeedProps) {
+export function LiveAlertFeed({ alerts, onViewAlert, onPlayVideo, onDismissAlert }: LiveAlertFeedProps) {
   const [pulse, setPulse] = useState(false);
 
   useEffect(() => {
@@ -121,15 +122,27 @@ export function LiveAlertFeed({ alerts, onViewAlert, onDismissAlert }: LiveAlert
                   </div>
                 </div>
 
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full gap-2 border-blue-200 text-blue-600 hover:bg-blue-50"
-                  onClick={() => onViewAlert(alert.transaction_id)}
-                >
-                  <Eye className="h-4 w-4" />
-                  Review Transaction
-                </Button>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2 border-blue-200 text-blue-600 hover:bg-blue-50"
+                    onClick={() => (onPlayVideo ? onPlayVideo(alert) : onViewAlert(alert.transaction_id))}
+                    title={alert.clip_url ? 'Play alert footage' : 'Open alert — clip will load when available'}
+                  >
+                    <PlayCircle className="h-4 w-4" />
+                    {alert.clip_url ? 'Play Video' : 'View Video'}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2 border-blue-200 text-blue-600 hover:bg-blue-50"
+                    onClick={() => onViewAlert(alert.transaction_id)}
+                  >
+                    <Eye className="h-4 w-4" />
+                    Review
+                  </Button>
+                </div>
               </Card>
             ))
           )}

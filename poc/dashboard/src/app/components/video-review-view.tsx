@@ -1,10 +1,18 @@
+import { useMemo, useState } from 'react';
 import { format } from 'date-fns';
 import { Bell, PlayCircle, Search, ShoppingBag, Video } from 'lucide-react';
 
-import type { Alert, Transaction } from '@/lib/mock-data';
+import type { Alert, ClipStatus, Transaction } from '@/lib/mock-data';
 import { Badge } from '@/app/components/ui/badge';
 import { Button } from '@/app/components/ui/button';
 import { Card } from '@/app/components/ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/app/components/ui/select';
 
 interface VideoReviewViewProps {
   alerts: Alert[];
@@ -25,14 +33,39 @@ interface VideoItem {
   status: string;
   timestamp: Date;
   tags: string[];
+  hasClip: boolean;
+  clipStatus: ClipStatus;
+  clipReason: string;
   alert?: Alert;
   transaction?: Transaction;
 }
+
+const CLIP_FILTER_OPTIONS: { value: string; label: string }[] = [
+  { value: 'all', label: 'All videos' },
+  { value: 'with_clip', label: 'With clip' },
+  { value: 'no_clip', label: 'No clip (any reason)' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'outside_buffer', label: 'Outside buffer' },
+  { value: 'camera_unmapped', label: 'Camera unmapped' },
+  { value: 'not_recorded', label: 'Not recorded' },
+  { value: 'retention_expired', label: 'Retention expired' },
+];
 
 function badgeClassForRisk(level: string) {
   if (level === 'High') return 'border-red-200 bg-red-50 text-red-700';
   if (level === 'Medium') return 'border-amber-200 bg-amber-50 text-amber-700';
   return 'border-green-200 bg-green-50 text-green-700';
+}
+
+function clipStatusLabel(status: ClipStatus): string {
+  switch (status) {
+    case 'pending': return 'Clip pending';
+    case 'outside_buffer': return 'Outside buffer';
+    case 'camera_unmapped': return 'Camera unmapped';
+    case 'retention_expired': return 'Retention expired';
+    case 'not_recorded': return 'Not recorded';
+    default: return 'Clip unavailable';
+  }
 }
 
 export function VideoReviewView({
@@ -41,6 +74,8 @@ export function VideoReviewView({
   onOpenAlert,
   onOpenTransaction,
 }: VideoReviewViewProps) {
+  const [clipFilter, setClipFilter] = useState<string>('all');
+
   const transactionMap = new Map(transactions.map(transaction => [transaction.id, transaction]));
 
   const coveredTransactions = new Set<string>();
@@ -51,10 +86,6 @@ export function VideoReviewView({
       ? transactionMap.get(alert.transaction_id)
       : undefined;
     const hasClip = Boolean(alert.clip_url || linkedTransaction?.clip_url);
-
-    if (!hasClip) {
-      return;
-    }
 
     if (linkedTransaction) {
       coveredTransactions.add(linkedTransaction.id);
@@ -72,6 +103,9 @@ export function VideoReviewView({
       status: alert.status,
       timestamp: alert.timestamp,
       tags: alert.triggered_rules || linkedTransaction?.triggered_rules || [],
+      hasClip,
+      clipStatus: alert.clip_status || (hasClip ? 'available' : 'unknown'),
+      clipReason: alert.clip_reason || '',
       alert,
       transaction: linkedTransaction,
     });
@@ -94,13 +128,24 @@ export function VideoReviewView({
       status: transaction.status || 'pending',
       timestamp: transaction.timestamp,
       tags: transaction.triggered_rules || [],
+      hasClip: true,
+      clipStatus: 'available',
+      clipReason: '',
       transaction,
     });
   });
 
   items.sort((left, right) => right.timestamp.getTime() - left.timestamp.getTime());
 
-  const alertClipCount = items.filter(item => item.type === 'alert').length;
+  const filteredItems = useMemo(() => {
+    if (clipFilter === 'all') return items;
+    if (clipFilter === 'with_clip') return items.filter(item => item.hasClip);
+    if (clipFilter === 'no_clip') return items.filter(item => !item.hasClip);
+    return items.filter(item => item.clipStatus === clipFilter);
+  }, [items, clipFilter]);
+
+  const alertClipCount = items.filter(item => item.type === 'alert' && item.hasClip).length;
+  const alertPendingCount = items.filter(item => item.type === 'alert' && !item.hasClip).length;
   const transactionClipCount = items.filter(item => item.type === 'transaction').length;
 
   return (
@@ -120,6 +165,9 @@ export function VideoReviewView({
             <div>
               <div className="text-sm text-red-600">Alert Videos</div>
               <div className="text-3xl font-bold text-red-700">{alertClipCount}</div>
+              {alertPendingCount > 0 && (
+                <div className="mt-1 text-xs text-red-500">{alertPendingCount} awaiting clip</div>
+              )}
             </div>
             <Bell className="h-8 w-8 text-red-500" />
           </div>
@@ -136,25 +184,41 @@ export function VideoReviewView({
       </div>
 
       <Card className="border-gray-200 shadow-sm">
-        <div className="flex items-center justify-between border-b border-gray-200 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 p-4">
           <div>
             <h3 className="text-lg font-semibold text-gray-800">Video Review</h3>
             <p className="text-sm text-gray-500">Open recorded clips from alerts and completed transactions.</p>
           </div>
-          <Badge variant="outline" className="border-gray-200 text-gray-500">
-            {items.length} clips
-          </Badge>
+          <div className="flex items-center gap-3">
+            <Select value={clipFilter} onValueChange={setClipFilter}>
+              <SelectTrigger className="w-[200px] bg-white border-gray-200 h-9 text-xs">
+                <SelectValue placeholder="Filter clips" />
+              </SelectTrigger>
+              <SelectContent>
+                {CLIP_FILTER_OPTIONS.map(option => (
+                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Badge variant="outline" className="border-gray-200 text-gray-500">
+              {filteredItems.length} / {items.length}
+            </Badge>
+          </div>
         </div>
 
         <div className="max-h-[720px] divide-y divide-gray-100 overflow-y-auto">
-          {items.length === 0 ? (
+          {filteredItems.length === 0 ? (
             <div className="py-16 text-center text-gray-400">
               <Search className="mx-auto mb-3 h-12 w-12 opacity-30" />
-              <p>No videos available yet</p>
-              <p className="mt-1 text-sm">Clips will appear here when alerts or transactions have saved footage.</p>
+              <p>{items.length === 0 ? 'No videos available yet' : 'No videos match this filter'}</p>
+              <p className="mt-1 text-sm">
+                {items.length === 0
+                  ? 'Clips will appear here when alerts or transactions have saved footage.'
+                  : 'Try a different filter option above.'}
+              </p>
             </div>
           ) : (
-            items.map(item => (
+            filteredItems.map(item => (
               <div key={item.id} className="flex items-start justify-between gap-4 p-4 hover:bg-gray-50">
                 <div className="min-w-0 flex-1">
                   <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -166,6 +230,11 @@ export function VideoReviewView({
                     <Badge variant="outline" className="border-gray-200 text-gray-600 capitalize">
                       {item.status}
                     </Badge>
+                    {!item.hasClip && (
+                      <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">
+                        {clipStatusLabel(item.clipStatus)}
+                      </Badge>
+                    )}
                   </div>
 
                   <div className="text-sm text-gray-600">
@@ -174,6 +243,11 @@ export function VideoReviewView({
                   <div className="mt-1 text-xs text-gray-400">
                     {format(item.timestamp, 'MMM dd, yyyy HH:mm:ss')} | Camera: {item.camId}
                   </div>
+                  {!item.hasClip && item.clipReason && (
+                    <div className="mt-2 rounded-md border border-amber-100 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">
+                      Why no clip: {item.clipReason}
+                    </div>
+                  )}
 
                   {item.tags.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-2">
@@ -188,7 +262,8 @@ export function VideoReviewView({
 
                 <Button
                   size="sm"
-                  className="shrink-0 gap-1.5 bg-blue-600 text-white hover:bg-blue-700"
+                  className={`shrink-0 gap-1.5 text-white ${item.hasClip ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-400 hover:bg-gray-500'}`}
+                  title={item.hasClip ? 'Play recorded clip' : 'Clip still being extracted — open to review details'}
                   onClick={() => {
                     if (item.type === 'alert' && item.alert) {
                       onOpenAlert(item.alert);
@@ -200,7 +275,7 @@ export function VideoReviewView({
                   }}
                 >
                   <PlayCircle className="h-3.5 w-3.5" />
-                  View Video
+                  {item.hasClip ? 'View Video' : 'Open'}
                 </Button>
               </div>
             ))

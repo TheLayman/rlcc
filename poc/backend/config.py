@@ -316,6 +316,10 @@ class Config:
                     issues.append(f"duplicate zone_id `{zone.zone_id}` for camera {c.camera_id}")
                     continue
                 seen_zone_ids.add(normalized_zone_id)
+                if c.enabled and not zone.seller_zone:
+                    issues.append(f"camera {c.camera_id} zone {zone.zone_id} has empty seller_zone — CV seller detection disabled")
+                if c.enabled and not zone.bill_zone:
+                    issues.append(f"camera {c.camera_id} zone {zone.zone_id} has empty bill_zone — rule 29 (bill not generated) disabled until zones are drawn")
 
             if not self.get_store(c.store_id):
                 issues.append(f"camera mapping references unknown store {c.store_id}")
