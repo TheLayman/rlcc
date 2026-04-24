@@ -116,6 +116,53 @@ export function TransactionDetailDrawer({ transaction, billData, open, onClose }
 
         <div className="flex flex-col gap-4 p-6">
           <section className="rounded-lg border border-gray-200 bg-white p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-blue-700 uppercase tracking-wide">Tagged Video</h3>
+              {clipUrl && (
+                <Button variant="outline" asChild className="gap-2 border-blue-200 text-blue-700 hover:bg-blue-50">
+                  <a href={clipUrl} target="_blank" rel="noreferrer">
+                    <Video className="h-4 w-4" />
+                    Open Clip
+                  </a>
+                </Button>
+              )}
+            </div>
+            {clipUrl ? (
+              <div className="space-y-3">
+                <video
+                  key={clipUrl}
+                  ref={videoRef}
+                  controls
+                  autoPlay
+                  playsInline
+                  preload="metadata"
+                  className="w-full rounded-lg border border-gray-200 bg-black"
+                  onLoadedData={() => setVideoLoadError('')}
+                  onError={() => setVideoLoadError('Clip could not be loaded in the browser. Try Open Clip to verify the stream response.')}
+                >
+                  <source src={clipUrl} type="video/mp4" />
+                </video>
+                {videoLoadError && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    {videoLoadError}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="py-4 px-4 border border-dashed border-gray-200 rounded-lg">
+                <div className="text-center text-sm text-gray-400">
+                  Clip not available for this transaction yet
+                </div>
+                {transaction.clip_reason && (
+                  <div className="mt-2 rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    <span className="font-medium">Why no clip:</span> {transaction.clip_reason}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-lg border border-gray-200 bg-white p-4">
             <h3 className="mb-3 text-sm font-semibold text-blue-700 uppercase tracking-wide">Store & Device Info</h3>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
               <div>
@@ -271,50 +318,8 @@ export function TransactionDetailDrawer({ transaction, billData, open, onClose }
           </section>
 
           <section className="rounded-lg border border-gray-200 bg-white p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-blue-700 uppercase tracking-wide">Tagged Video & Timeline</h3>
-              {clipUrl && (
-                <Button variant="outline" asChild className="gap-2 border-blue-200 text-blue-700 hover:bg-blue-50">
-                  <a href={clipUrl} target="_blank" rel="noreferrer">
-                    <Video className="h-4 w-4" />
-                    Open Clip
-                  </a>
-                </Button>
-              )}
-            </div>
-            {clipUrl ? (
-              <div className="space-y-3">
-                <video
-                  key={clipUrl}
-                  ref={videoRef}
-                  controls
-                  playsInline
-                  preload="metadata"
-                  className="w-full rounded-lg border border-gray-200 bg-black"
-                  onLoadedData={() => setVideoLoadError('')}
-                  onError={() => setVideoLoadError('Clip could not be loaded in the browser. Try Open Clip to verify the stream response.')}
-                >
-                  <source src={clipUrl} type="video/mp4" />
-                </video>
-                {videoLoadError && (
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                    {videoLoadError}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="py-4 px-4 border border-dashed border-gray-200 rounded-lg">
-                <div className="text-center text-sm text-gray-400">
-                  Clip not available for this transaction yet
-                </div>
-                {transaction.clip_reason && (
-                  <div className="mt-2 rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                    <span className="font-medium">Why no clip:</span> {transaction.clip_reason}
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="mt-4 space-y-2 max-h-72 overflow-auto">
+            <h3 className="mb-3 text-sm font-semibold text-blue-700 uppercase tracking-wide">Event Timeline</h3>
+            <div className="space-y-2 max-h-72 overflow-auto">
               {timelineLoading ? (
                 <div className="text-sm text-gray-400">Loading timeline…</div>
               ) : timeline.length === 0 ? (

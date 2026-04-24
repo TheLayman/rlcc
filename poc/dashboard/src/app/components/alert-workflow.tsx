@@ -24,17 +24,6 @@ interface AlertWorkflowProps {
   onOpenTransaction?: (alert: Alert) => void;
 }
 
-const CLIP_FILTER_OPTIONS: { value: string; label: string }[] = [
-  { value: 'all', label: 'Any clip state' },
-  { value: 'with_clip', label: 'With clip' },
-  { value: 'no_clip', label: 'No clip (any reason)' },
-  { value: 'pending', label: 'Clip pending' },
-  { value: 'outside_buffer', label: 'Outside buffer' },
-  { value: 'camera_unmapped', label: 'Camera unmapped' },
-  { value: 'not_recorded', label: 'Not recorded' },
-  { value: 'retention_expired', label: 'Retention expired' },
-];
-
 function clipStatusLabel(status: ClipStatus): string {
   switch (status) {
     case 'pending': return 'Clip pending';
@@ -46,18 +35,30 @@ function clipStatusLabel(status: ClipStatus): string {
   }
 }
 
+function humanizeRule(rule: string): string {
+  const [prefix, ...rest] = rule.split('_');
+  const name = rest.length ? rest.join(' ') : prefix;
+  return `${prefix}. ${name.replace(/\b\w/g, (c) => c.toUpperCase())}`;
+}
+
 export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransaction }: AlertWorkflowProps) {
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [clipFilter, setClipFilter] = useState<string>('all');
+  const [typeFilter, setTypeFilter] = useState<string>('all');
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
   const [remarks, setRemarks] = useState('');
   const [newStatus, setNewStatus] = useState('');
 
-  const alertHasClip = (alert: Alert) => {
-    if (alert.clip_url) return true;
-    const linked = transactions.find(txn => txn.id === alert.transaction_id);
-    return Boolean(linked?.clip_url);
-  };
+  const ruleTypeOptions = useMemo(() => {
+    const seen = new Map<string, number>();
+    alerts.forEach(alert => {
+      (alert.triggered_rules || []).forEach(rule => {
+        seen.set(rule, (seen.get(rule) || 0) + 1);
+      });
+    });
+    return Array.from(seen.entries())
+      .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+      .map(([rule, count]) => ({ value: rule, label: `${humanizeRule(rule)} (${count})` }));
+  }, [alerts]);
 
   const filteredAlerts = useMemo(() => {
     let result = alerts;
@@ -65,12 +66,12 @@ export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransacti
     else if (statusFilter === 'investigating') result = result.filter(a => a.status === 'reviewing');
     else if (statusFilter === 'closed') result = result.filter(a => ['resolved', 'Genuine'].includes(a.status));
 
-    if (clipFilter === 'with_clip') result = result.filter(a => alertHasClip(a));
-    else if (clipFilter === 'no_clip') result = result.filter(a => !alertHasClip(a));
-    else if (clipFilter !== 'all') result = result.filter(a => (a.clip_status || 'unknown') === clipFilter);
+    if (typeFilter !== 'all') {
+      result = result.filter(a => (a.triggered_rules || []).includes(typeFilter));
+    }
 
     return result;
-  }, [alerts, statusFilter, clipFilter, transactions]);
+  }, [alerts, statusFilter, typeFilter]);
 
   const summary = useMemo(() => {
     const open = alerts.filter(a => ['new', 'Fraudulent', 'Pending for review'].includes(a.status)).length;
@@ -159,18 +160,19 @@ export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransacti
         <div className="p-4 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-lg font-semibold text-gray-800">Alert Management</h3>
           <div className="flex items-center gap-2">
-            <Select value={clipFilter} onValueChange={setClipFilter}>
-              <SelectTrigger className="w-[180px] bg-white border-gray-200 h-9 text-xs">
-                <SelectValue placeholder="Clip filter" />
+            <Select value={typeFilter} onValueChange={setTypeFilter}>
+              <SelectTrigger className="w-[240px] bg-white border-gray-200 h-9 text-xs">
+                <SelectValue placeholder="Alert type" />
               </SelectTrigger>
               <SelectContent>
-                {CLIP_FILTER_OPTIONS.map(option => (
+                <SelectItem value="all">All alert types</SelectItem>
+                {ruleTypeOptions.map(option => (
                   <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
             <Badge variant="outline" className="text-gray-500">
-              {filteredAlerts.length} {statusFilter === 'all' && clipFilter === 'all' ? 'total' : 'filtered'}
+              {filteredAlerts.length} {statusFilter === 'all' && typeFilter === 'all' ? 'total' : 'filtered'}
             </Badge>
           </div>
         </div>
