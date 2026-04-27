@@ -799,4 +799,5 @@ async def zones_save(payload: dict):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("cv.main:app", host=settings.cv_host, port=settings.cv_port, reload=True)
+    reload_enabled = os.getenv("CV_RELOAD", "").strip().lower() in {"1", "true", "yes", "on"}
+    uvicorn.run("cv.main:app", host=settings.cv_host, port=settings.cv_port, reload=reload_enabled)

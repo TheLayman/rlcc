@@ -1012,11 +1012,14 @@ if dashboard_build.exists():
 
 
 if __name__ == "__main__":
+    import os
+
     import uvicorn
 
+    reload_enabled = os.getenv("BACKEND_RELOAD", "").strip().lower() in {"1", "true", "yes", "on"}
     uvicorn.run(
         "backend.main:app",
         host=deps.settings.backend_host,
         port=deps.settings.backend_port,
-        reload=True,
+        reload=reload_enabled,
     )
