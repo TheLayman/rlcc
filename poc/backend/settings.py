@@ -25,11 +25,7 @@ class Settings:
     dashboard_port: int
     video_buffer_minutes: int
     video_retention_days: int
-    external_sales_url: str
-    external_sales_header_token: str
     torch_whl_index_url: str
-    sales_reconciliation_minutes: int
-    sales_reconciliation_lookback_minutes: int
 
 
 def get_settings(env_path: Path | None = None) -> Settings:
@@ -44,9 +40,5 @@ def get_settings(env_path: Path | None = None) -> Settings:
         dashboard_port=int(os.getenv("DASHBOARD_PORT", "5173")),
         video_buffer_minutes=int(os.getenv("VIDEO_BUFFER_MINUTES", "10")),
         video_retention_days=int(os.getenv("VIDEO_RETENTION_DAYS", "7")),
-        external_sales_url=os.getenv("EXTERNAL_SALES_URL", ""),
-        external_sales_header_token=os.getenv("EXTERNAL_SALES_HEADER_TOKEN", ""),
         torch_whl_index_url=os.getenv("TORCH_WHL_INDEX_URL", "https://download.pytorch.org/whl/cu124"),
-        sales_reconciliation_minutes=int(os.getenv("SALES_RECONCILIATION_MINUTES", "2")),
-        sales_reconciliation_lookback_minutes=int(os.getenv("SALES_RECONCILIATION_LOOKBACK_MINUTES", "10")),
     )

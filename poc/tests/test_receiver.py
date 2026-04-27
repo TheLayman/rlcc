@@ -2,6 +2,9 @@ import json
 import pytest
 from httpx import AsyncClient, ASGITransport
 from backend.main import app
+from backend.receiver import ROUTES
+
+PUSH_PATHS = {event: path for path, event in ROUTES}
 
 
 @pytest.mark.anyio
@@ -19,7 +22,7 @@ async def test_begin_transaction():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
-            "/v1/rlcc/launch-event",
+            PUSH_PATHS["BeginTransactionWithTillLookup"],
             content=stringified,
             headers={"Content-Type": "application/json", "x-authorization-key": "test"},
         )
@@ -34,9 +37,13 @@ async def test_full_transaction_flow():
 
     async def send(payload):
         stringified = json.dumps(json.dumps(payload))
+        path = PUSH_PATHS[payload["event"]]
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            return await client.post("/v1/rlcc/launch-event", content=stringified,
-                                      headers={"Content-Type": "application/json", "x-authorization-key": "test"})
+            return await client.post(
+                path,
+                content=stringified,
+                headers={"Content-Type": "application/json", "x-authorization-key": "test"},
+            )
 
     # Begin
     await send({"event": "BeginTransactionWithTillLookup", "storeIdentifier": "NDCIN1223",
@@ -76,8 +83,11 @@ async def test_full_transaction_flow():
 async def test_invalid_json():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/v1/rlcc/launch-event", content="not json",
-                                  headers={"Content-Type": "application/json", "x-authorization-key": "test"})
+        resp = await client.post(
+            PUSH_PATHS["BeginTransactionWithTillLookup"],
+            content="not json",
+            headers={"Content-Type": "application/json", "x-authorization-key": "test"},
+        )
     assert resp.status_code == 400
 
 
@@ -95,6 +105,28 @@ async def test_normal_json_also_works():
     }
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/v1/rlcc/launch-event", json=payload,
-                                  headers={"x-authorization-key": "test"})
+        resp = await client.post(
+            PUSH_PATHS["BeginTransactionWithTillLookup"],
+            json=payload,
+            headers={"x-authorization-key": "test"},
+        )
     assert resp.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_event_path_mismatch_returns_400():
+    """Posting a Commit payload to the Begin endpoint should be rejected."""
+    payload = {
+        "event": "CommitTransaction",
+        "transactionSessionId": "mismatch-session-001",
+        "transactionNumber": "BILL-MISMATCH-001",
+    }
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            PUSH_PATHS["BeginTransactionWithTillLookup"],
+            json=payload,
+            headers={"x-authorization-key": "test"},
+        )
+    assert resp.status_code == 400
+    assert "event mismatch" in resp.json()["message"]

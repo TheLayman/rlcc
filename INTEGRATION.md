@@ -1,63 +1,316 @@
 # Integration Guide
 
-External contracts. This doc is for Nukkad, WAISL, and ops — not our devs. For internal design, see BACKEND_DESIGN.md. Sections 3-5 are internal protocol specs included for ops reference.
+External contracts. This doc is for Nukkad, WAISL, and ops — not our devs. For internal design, see BACKEND_DESIGN.md. Sections 3-4 are internal protocol specs included for ops reference.
 
 ## 1. Nukkad Push API Integration
 
-Nukkad pushes POS events to our receiver in real-time. We don't poll them anymore (except for ARMS POS stores — see section 5).
+Nukkad pushes POS events to our receiver in real-time. **There is no pull API on either side** — we don't poll Nukkad's sales endpoints, and Nukkad doesn't poll us. Every transaction state change crosses the wire as a push event the moment it happens at the POS.
 
-### Our receiver endpoint
+We expose **9 endpoints, one per RLCC event type**, each accepting one specific event from the RLCC API spec. The payload's `event` field must match the route or the request is rejected with HTTP 400.
+
+### Endpoint surface
 
 ```
-POST https://{our-server}/v1/rlcc/launch-event
-Headers:
+Base: POST https://{our-server}:8001
+Headers (every request):
   Content-Type: application/json
   x-authorization-key: {agreed-upon-key}
+Body: application/json (the receiver also accepts a stringified JSON body)
 ```
 
-We accept all 9 Nukkad event types on this single endpoint. We route by the `event` field in the payload.
+| # | Event (`event` field) | Path |
+|---|---|---|
+| 4.1 | `BeginTransactionWithTillLookup`       | `POST /v1/rlcc/begin-transaction-with-till-lookup` |
+| 4.2 | `AddTransactionEvent`                  | `POST /v1/rlcc/add-transaction-event` |
+| 4.3 | `AddTransactionPaymentLine`            | `POST /v1/rlcc/add-transaction-payment-line` |
+| 4.4 | `AddTransactionSaleLine`               | `POST /v1/rlcc/add-transaction-sale-line` |
+| 4.5 | `AddTransactionSaleLineWithTillLookup` | `POST /v1/rlcc/add-transaction-sale-line-with-till-lookup` |
+| 4.6 | `AddTransactionTotalLine`              | `POST /v1/rlcc/add-transaction-total-line` |
+| 4.7 | `CommitTransaction`                    | `POST /v1/rlcc/commit-transaction` |
+| 4.8 | `GetTill`                              | `POST /v1/rlcc/get-till` |
+| 4.9 | `BillReprint`                          | `POST /v1/rlcc/bill-reprint` |
+
+Section numbers above match `RLCC API Documentation.pdf` (v0.1, 25-Mar-25). Field-level schemas below mirror that document — when in doubt, the PDF wins.
 
 ### Event flow per transaction
 
 ```
-1. BeginTransactionWithTillLookup  → opens session
-2. AddTransactionSaleLine ×N       → one per item scanned
-3. AddTransactionPaymentLine ×N    → one per payment method
-4. AddTransactionTotalLine ×N      → subtotal, VAT, discounts, total
-5. CommitTransaction               → finalizes, triggers fraud rules
+1. BeginTransactionWithTillLookup       → opens session
+2. AddTransactionSaleLine ×N            → one per item scanned
+   (or AddTransactionSaleLineWithTillLookup if till resolution is needed)
+3. AddTransactionPaymentLine ×N         → one per payment method
+4. AddTransactionTotalLine ×N           → subtotal, VAT, discounts, total
+5. CommitTransaction                    → finalizes, triggers fraud rules
 ```
 
-Additional events (not part of the normal flow):
+Standalone events (not part of the normal flow):
 - `AddTransactionEvent` — lifecycle: suspended, resumed, cancelled
 - `BillReprint` — standalone, triggers alert immediately
-- `GetTill` — till lookup, not a transaction event
-- `AddTransactionSaleLineWithTillLookup` — same as AddTransactionSaleLine with till resolution
+- `GetTill` — till lookup, returns till number; no transaction state change
+
+All transactional events are correlated to the same session via `transactionSessionId` (returned by `BeginTransactionWithTillLookup`).
+
+### 4.1  BeginTransactionWithTillLookup
+
+`POST /v1/rlcc/begin-transaction-with-till-lookup`
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `event` | string | Yes | Always `"BeginTransactionWithTillLookup"`. |
+| `applicationType` | string | Yes | Application type, e.g. `"Retail"`. |
+| `storeIdentifier` | string | Yes | Unique store identifier. |
+| `posTerminalNo` | string | Yes | POS terminal processing the transaction. |
+| `isForTillLookup` | boolean | Yes | Indicates the transaction uses till-description lookup. Always `true`. |
+| `isPreviousTransaction` | boolean | Yes | Whether this transaction links to a previous one. |
+| `transactionSessionId` | string | No | Session id for tracking the transaction. |
+| `branch` | string | Yes | Branch / store name where the transaction occurs. |
+| `tillDescription` | string | Yes | Text description of the till. |
+| `transactionNumber` | string | Yes | Unique transaction number. |
+| `branchLinkedTo` | string | If `isPreviousTransaction=true` | Branch of the previous (linked) transaction. |
+| `tillDescriptionLinkedTo` | string | If `isPreviousTransaction=true` | Till description of the previous transaction. |
+| `LinkedTo` | string | If `isPreviousTransaction=true` | Previous transaction's till description (link). |
+| `transactionNumberLinkedTo` | string | If `isPreviousTransaction=true` | Previous transaction number. |
+| `transactionTimeStamp` | string (ISO 8601) | No | UTC timestamp `YYYY-MM-DDTHH:MM:SSZ`. |
+| `debitor` | string | No | Customer identifier. |
+| `cashier` | string | No | Cashier identifier. |
+| `currencyCode` | string (ISO 4217) | Yes | 3-letter currency code, e.g. `"INR"`. |
+| `transactionType` | string (enum) | Yes | See enum §6.4. |
+| `employeePurchase` | boolean | Yes | Whether the transaction is an employee purchase. |
+| `outsideOpeningHours` | string (enum) | No | `InsideOpeningHours` / `OutsideOpeningHours` / `PartlyOutsideOpeningHours`. |
+| `maximumScanGap` | integer | No | Max time (seconds) between scanned items. |
+
+Success response: `{"status": 200, "message": "Success", "data": {"ErrorCode": "-1", "Succeeded": "true", "TransactionSessionId": "<id>"}}`
+
+### 4.2  AddTransactionEvent
+
+`POST /v1/rlcc/add-transaction-event`
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `event` | string | Yes | Always `"AddTransactionEvent"`. |
+| `applicationType` | string | Yes | e.g. `"Retail"`. |
+| `storeIdentifier` | string | Yes | Store id. |
+| `posTerminalNo` | string | Yes | POS terminal id. |
+| `transactionSessionId` | string | Yes | Session id from Begin. |
+| `lineTimeStamp` | string (ISO 8601) | No | UTC timestamp of the line. |
+| `lineNumber` | integer | No | Sequential line number. |
+| `lineAttribute` | string (enum) | Yes | Lifecycle: see enum §6.2 (`None`, `TransactionSuspended`, `TransactionResumed`, `TransactionCancelled`). |
+| `eventDescription` | string | Yes | Human description of the event. |
+| `printable` | boolean | Yes | Whether the event prints on the receipt. |
+
+### 4.3  AddTransactionPaymentLine
+
+`POST /v1/rlcc/add-transaction-payment-line`
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `event` | string | Yes | Always `"AddTransactionPaymentLine"`. |
+| `applicationType` | string | Yes | e.g. `"Retail"`. |
+| `storeIdentifier` | string | Yes | Store id. |
+| `posTerminalNo` | string | Yes | POS terminal id. |
+| `transactionSessionId` | string | Yes | Session id. |
+| `lineTimeStamp` | string (ISO 8601) | No | UTC timestamp. |
+| `lineNumber` | integer | No | Sequential payment-line number. |
+| `lineAttribute` | string (enum) | Yes | Payment method enum §6.3 (`Cash`, `CreditCard`, `UPI`, `GiftCard`, …). |
+| `paymentDescription` | string | Yes | Free-text description, e.g. `"Credit Card"`. |
+| `currencyCode` | string (ISO 4217) | No | 3-letter currency, e.g. `"USD"`. |
+| `currencyAmount` | decimal | No | Original payment amount in the foreign currency. |
+| `exchangeRate` | decimal | No | Exchange rate if foreign currency. |
+| `amount` | decimal | Yes | Final amount in the base currency. |
+| `paymentTypeID` | string | No | Payment-type identifier (e.g. `"CreditCard"`, `"GiftCard"`). |
+| `cardType` | string | No | Card brand if a card payment, e.g. `"Visa"`. |
+| `printable` | boolean | Yes | Whether to print on the receipt. |
+
+### 4.4  AddTransactionSaleLine
+
+`POST /v1/rlcc/add-transaction-sale-line`
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `event` | string | Yes | Always `"AddTransactionSaleLine"`. |
+| `applicationType` | string | Yes | e.g. `"Retail"`. |
+| `storeIdentifier` | string | Yes | Store id. |
+| `posTerminalNo` | string | Yes | POS terminal id. |
+| `isForTillLookup` | boolean | Yes | Whether the request uses till lookup. |
+| `isPreviousTransaction` | boolean | Yes | Whether linked to a previous transaction. |
+| `transactionSessionId` | string | Yes | Session id. |
+| `lineTimeStamp` | string (ISO 8601) | No | UTC timestamp. |
+| `lineNumber` | integer | No | Sequential line number. |
+| `itemAttribute` | string (enum) | Yes | Item attribute, see enum §6.5. |
+| `scanAttribute` | string (enum) | Yes | Scan method, see enum §6.6 (`None`, `Auto`, `ModifiedUnitPrice`, `ManuallyEntered`). |
+| `itemID` | string | No | Unique item id. |
+| `itemDescription` | string | Yes | Item name. |
+| `itemQuantity` | integer | Yes | Quantity. |
+| `itemUnitMeasure` | string | No | Unit of measure (e.g. `kg`, `pcs`). |
+| `itemUnitPrice` | decimal | Yes | Unit price. |
+| `discountType` | string (enum) | Yes | Discount type, see enum §6.7. |
+| `discount` | decimal | No | Discount amount applied to the line. |
+| `totalAmount` | decimal | Yes | Final line price after discount. |
+| `branchLinkedTo` | string | Yes (per spec) | Linked branch — relevant when `isPreviousTransaction=true`. |
+| `tillLinkedTo` | string | Yes (per spec) | Linked till. |
+| `tillDescriptionLinkedTo` | string | No | Description of the linked till. |
+| `transactionNumberLinkedTo` | string | Yes (per spec) | Linked transaction number. |
+| `transactionTimestampLinkedTo` | string (ISO 8601) | Yes (per spec) | Linked transaction timestamp. |
+| `grantedBy` | string | No | User who granted the discount. |
+| `printable` | boolean | Yes | Whether to print on the receipt. |
+
+> Note: The PDF marks the `*LinkedTo` fields as required, but they are only meaningful when `isPreviousTransaction=true`. Send empty strings on a fresh sale line if Nukkad's client requires the keys to be present.
+
+### 4.5  AddTransactionSaleLineWithTillLookup
+
+`POST /v1/rlcc/add-transaction-sale-line-with-till-lookup`
+
+Same shape as 4.4 but the `*LinkedTo` fields are explicitly marked optional, and `lineTimeStamp` / `lineNumber` are required.
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `event` | string | Yes | Always `"AddTransactionSaleLineWithTillLookup"`. |
+| `applicationType` | string | Yes | e.g. `"Retail"`. |
+| `storeIdentifier` | string | Yes | Store id. |
+| `posTerminalNo` | string | Yes | POS terminal id. |
+| `isForTillLookup` | boolean | Yes | Whether till lookup is enabled. |
+| `isPreviousTransaction` | boolean | Yes | Whether linked to a previous transaction. |
+| `transactionSessionId` | string | Yes | Session id. |
+| `lineTimeStamp` | string (ISO 8601) | Yes | Timestamp of the line. |
+| `lineNumber` | integer | Yes | Unique line number in the transaction. |
+| `itemAttribute` | string (enum) | Yes | See enum §6.5. |
+| `scanAttribute` | string (enum) | Yes | See enum §6.6. |
+| `itemID` | string | No | Unique item id. |
+| `itemDescription` | string | Yes | Item name. |
+| `itemQuantity` | integer | Yes | Quantity. |
+| `itemUnitMeasure` | string | No | Unit of measure. |
+| `itemUnitPrice` | decimal | Yes | Unit price. |
+| `discountType` | string (enum) | Yes | See enum §6.7. |
+| `discount` | decimal | No | Discount amount. |
+| `totalAmount` | decimal | Yes | Total after discount. |
+| `branchLinkedTo` | string | No | Linked branch. |
+| `tillLinkedTo` | string | No | Linked till. |
+| `tillDescriptionLinkedTo` | string | No | Linked till description. |
+| `transactionNumberLinkedTo` | string | No | Linked transaction number. |
+| `transactionTimestampLinkedTo` | string (ISO 8601) | No | Linked transaction timestamp. |
+| `grantedBy` | string | No | Discount granter. |
+| `printable` | boolean | Yes | Whether to print on the receipt. |
+
+### 4.6  AddTransactionTotalLine
+
+`POST /v1/rlcc/add-transaction-total-line`
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `event` | string | Yes | Always `"AddTransactionTotalLine"`. |
+| `applicationType` | string | Yes | e.g. `"Retail"`. |
+| `storeIdentifier` | string | Yes | Store id. |
+| `posTerminalNo` | string | Yes | POS terminal id. |
+| `transactionSessionId` | string | Yes | Session id. |
+| `lineTimeStamp` | string (ISO 8601) | No | UTC timestamp of the line. |
+| `lineNumber` | integer | No | Sequence number. |
+| `lineAttribute` | string (enum) | Yes | Total-line attribute, see enum §6.8 (must be a valid `TotalLineAttribute`). |
+| `totalDescription` | string | Yes | Description, e.g. `"Total Amount Payable"` or `"VAT Calculation"`. |
+| `amount` | decimal | Yes | Total amount for this line. |
+| `printable` | boolean | Yes | Whether to print on the receipt. |
+
+### 4.7  CommitTransaction
+
+`POST /v1/rlcc/commit-transaction`
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `event` | string | Yes | Always `"CommitTransaction"`. |
+| `applicationType` | string | Yes | e.g. `"Retail"`. |
+| `storeIdentifier` | string | Yes | Store id. |
+| `posTerminalNo` | string | Yes | POS terminal id. |
+| `transactionSessionId` | string | Yes | Session id from Begin. |
+| `transactionNumber` | string | No | Optional bill number for the committed transaction. |
+
+Success collapses the session into a finalized transaction in our store and triggers fraud-rule evaluation.
+
+### 4.8  GetTill
+
+`POST /v1/rlcc/get-till`
+
+A till-lookup RPC. We acknowledge it and broadcast the raw event but do not assemble transaction state from it.
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `event` | string | Yes | Always `"GetTill"`. |
+| `applicationType` | string | Yes | e.g. `"Retail"`. |
+| `storeIdentifier` | string | Yes | Store id. |
+| `posTerminalNo` | string | Yes | POS terminal id. |
+| `branch` | string | Yes | Branch / store name. |
+| `tillDescription` | string | Yes | Till description (e.g. `"POS1"`). |
+
+Success response: `{"status": 200, "message": "Success", "data": {"ErrorCode": "-1", "Succeeded": "true", "Till": "<till-number>"}}`. Error case (till not configured) returns HTTP 400 with `ErrorCode: "11"`.
+
+### 4.9  BillReprint
+
+`POST /v1/rlcc/bill-reprint`
+
+Standalone notification — fires a fraud alert immediately.
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `event` | string | Yes | Always `"BillReprint"`. |
+| `applicationType` | string | Yes | e.g. `"Retail"`. |
+| `storeIdentifier` | string | Yes | Store id. |
+| `posTerminalNo` | string | Yes | POS terminal id. |
+| `branch` | string | Yes | Branch / store name. |
+| `tillDescription` | string | Yes | Till description used. |
+| `transactionTimestamp` | long | Yes | Milliseconds since epoch. |
+| `billNumber` | string | Yes | Unique bill number being reprinted. |
+| `cashier` | string | Yes | Cashier id handling the reprint. |
+
+### Error envelope
+
+The receiver returns the same error envelope across endpoints:
+
+```
+{ "status": 400, "message": "Failure",
+  "data": { "ErrorCode": "11", "ErrorDescription": "...", "Succeeded": "false" } }
+```
+
+Common cases: missing required field (`"<field>" is required`), wrong type (`"<field>" must be a string`), till not found (`ErrorCode 11`), unknown `transactionSessionId` (`ErrorCode 1`).
 
 ### What we need from Nukkad
 
 | # | Item | Status | Impact |
 |---|------|--------|--------|
-| 1 | Point staging/production endpoints to our receiver URL | Pending | Nothing works without this |
-| 2 | Clarify: "All APIs need to be stringified" — is the body `{"event":"BeginTransactionWithTillLookup",...}` (normal JSON) or `"{\"event\":\"BeginTransactionWithTillLookup\",...}"` (string-wrapped)? | Pending | Affects our parser |
-| 3 | Clarify: `storeIdentifier` values — CIN codes (`NDCIN1223`) or store names (`"Asha"`)? | Pending | Affects store mapping |
-| 4 | Confirm retry/queue policy if our endpoint is down | Pending | Affects whether we need our own event queue |
-| 5 | Timeline for ARMS POS coverage | Pending | ARMS stores stay on poll-based integration until covered |
+| 1 | Point staging/production push to our 9 endpoints at `https://{our-server}:8001/v1/rlcc/*` | Pending | Nothing works without this |
+| 2 | Confirm body format: normal JSON (`{...}`) or stringified (`"{...}"`)? Receiver accepts both, but knowing the canonical form helps debugging. | Pending | Affects parser logging |
+| 3 | Confirm `storeIdentifier` values — CIN codes (`NDCIN1223`) or store names (`"Asha"`)? | Pending | Affects store mapping |
+| 4 | Confirm retry/queue policy if our endpoint is down | Pending | Determines whether we need our own ingest queue |
+| 5 | Confirm timezone of `transactionTimeStamp` / `lineTimeStamp` (UTC vs IST) | Pending | Backend converts to UTC; mis-tagged input drifts the timeline |
 
 ### Key enums we consume
 
-**scanAttribute** (on sale lines): `None`, `Auto`, `ManuallyEntered`, `ModifiedUnitPrice`
+Mirrors §6 of the PDF.
 
-**discountType** (on sale lines): `NoLineDiscount`, `DiscountNotAllowed`, `AutoGeneratedValue`, `AutoGeneratedPercentage`, `ManuallyEnteredValue`, `ManuallyEnteredPercentage`
+**outsideOpeningHours (§6.1):** `InsideOpeningHours`, `OutsideOpeningHours`, `PartlyOutsideOpeningHours`
 
-**itemAttribute** (on sale lines): `None`, `ReturnItem`, `CancellationWithinTransaction`, `VoidedBackorderItem`, `ExchangeSlip`, `ExchangeSlipWithoutMatchingLine`, `ReturnNotRecentlySold`, `BulkPurchase`, `GiftCard`, `BackorderItem`, `FastMovingItem`
+**lineAttribute — `AddTransactionEvent` (§6.2):** `None`, `TransactionSuspended`, `TransactionResumed`, `TransactionCancelled`
 
-**lineAttribute** (on payment lines): `None`, `Cash`, `CashInForeignAmount`, `CreditCard`, `GiftCard`, `InternalShopVoucher`, `BankVoucher`, `AccountSale`, `ReturnCash`, `FractionRounding`, `PurchaseOrder`, `CreditNoteIssued`, `CreditNotePayment`, `LoyaltyCard`, `UPI`
+**lineAttribute — payment line (§6.3):** `None`, `Cash`, `CashInForeignAmount`, `CreditCard`, `GiftCard`, `InternalShopVoucher`, `BankVoucher`, `AccountSale`, `ReturnCash`, `FractionRounding`, `PurchaseOrder`, `CreditNoteIssued`, `CreditNotePayment`, `LoyaltyCard`, `UPI`
 
-**transactionType**: `CompletedNormally`, `Suspended`, `Cancelled`, `CancellationOfPrevious`, `OperatorSignOn`, `OperatorSignOff`, `DrawerOpenedOutsideATransaction`, `CashStatement`, `SurpriseTillCashCounts`
+**transactionType (§6.4):** `CompletedNormally` (default), `Suspended`, `Cancelled`, `CancellationOfPrevious`, `OperatorSignOn`, `OperatorSignOff`, `DrawerOpenedOutsideATransaction`, `CashStatement`, `SurpriseTillCashCounts`
 
-**totalLineAttributes**: `None`, `SubTotal`, `VAT`, `FinalDiscountLess`, `DiscountIncludedInTotalAmount`, `LoyaltyCardDiscount`, `TotalAmountToBePaid`, `TotalDiscount`, `TotalEmployeeDiscount`
+**itemAttribute (§6.5):** `None`, `ExchangeSlipWithoutMatchingLine`, `BackorderItem`, `VoidedBackorderItem`, `ReturnItem`, `CancellationWithinTransaction`, `GiftCard`, `ExchangeSlip`, `ReturnNotRecentlySold`, `Reserved`, `FastMovingItem`, `BulkPurchase`
 
-Note: Nukkad API doc spells this as `TotalEmployeeDiscout` (sic). Verify actual value.
+**scanAttribute (§6.6):** `None`, `Auto`, `ModifiedUnitPrice`, `ManuallyEntered`
+
+**discountType (§6.7):** `NoLineDiscount`, `DiscountNotAllowed`, `AutoGeneratedValue`, `AutoGeneratedPercentage`, `ManuallyEnteredValue`, `ManuallyEnteredPercentage`
+
+**totalLineAttributes (§6.8):** `None`, `SubTotal`, `VAT`, `FinalDiscountLess`, `DiscountIncludedInTotalAmount`, `LoyaltyCardDiscount`, `TotalAmountToBePaid`, `TotalDiscount`, `TotalEmployeeDiscout` (PDF spelling — verify before relying on it)
+
+### Smoke test
+
+After Nukkad is wired up to our endpoints, on the server:
+
+```bash
+python3 poc/scripts/verify_push_endpoints.py \
+    --base-url http://localhost:8001 \
+    --auth-key "$NUKKAD_PUSH_AUTH_KEY"
+```
+
+Sends a synthetic `BeginTransactionWithTillLookup → … → CommitTransaction` flow plus standalone `GetTill` and `BillReprint` calls. Exits non-zero if any of the 9 returns ≠ 200.
 
 ## 2. XProtect WebRTC Integration
 
@@ -160,157 +413,13 @@ Checklist for bringing a new store online:
 - [ ] Store added to `stores.json` (cin, name, operator, pos_system)
 - [ ] POS-to-camera mapping added (`mapping.json` or via GetTill)
 - [ ] XProtect device ID mapped to store/POS
-- [ ] Nukkad push events arriving for this store's `storeIdentifier`
+- [ ] Nukkad pushing all 9 RLCC events for this store's `storeIdentifier`
 
 ### Validation
 - [ ] Make a test transaction at POS
-- [ ] Verify: Nukkad events received by app server
+- [ ] Verify: Begin → SaleLine → Payment → Total → Commit events received in order
+- [ ] Verify: `verify_push_endpoints.py` passes against live backend
 - [ ] Verify: CV signals show customer + seller presence during transaction
 - [ ] Verify: Transaction appears in dashboard with correct data
 - [ ] Verify: Video playback works for the transaction timestamp
 - [ ] Verify: Alert rules fire correctly (test with a void or high-discount transaction)
-
-## 5. Nukkad Sales Data API (Existing Pull-Based)
-
-The existing Nukkad sales data API (`SalesPoller`) is not replaced by the push API. It's still needed for three things:
-
-**ARMS POS stores.** The push API doc states "does not cover ARMS." Stores with `pos_system: "ARMS-Dino"` continue on 2-minute polling. Less granular data — no per-item `scanAttribute`, `discountType`, or `itemAttribute` enums. Only the original 9 fraud rules fire.
-
-**Historical backfill.** On new store deployment or system restart, `SalesPoller.fetch_historical(days)` pulls completed bills for the past N days. Push API doesn't replay past events.
-
-**Reconciliation.** Hourly job polls for completed bills, compares against push-assembled transactions by `billNumber`, backfills any gaps. Safety net for push API delivery failures.
-
-### Two API variants
-
-There are two separate sales APIs for different POS types. Same endpoint pattern, different base URLs and response schemas.
-
-| Variant | Base URL | POS Type | Doc Version | Stores |
-|---------|----------|----------|-------------|--------|
-| **F&B** (Posifly) | `https://integrations.fnb.posifly.in/v1/` | Food & Beverage | v5.0 (20-Aug-2025) | Airport restaurants, cafes, lounges |
-| **Retail** (Nukkad Shops) | `https://openapis.nukkadshops.com/v1/` | Retail | v4.0 (25-Nov-2024) | Airport retail shops |
-
-Both use: `POST {baseurl}/sales/getSalesWithItems`
-
-```
-Headers:
-  Content-Type: application/json
-  X-Nukkad-API-Token: {token}
-```
-
-Request: `{"cin": "NSCIN8227", "from": "unix_timestamp", "to": "unix_timestamp", "pageNo": "1"}`
-
-Response path: `data.bills[]` (max 100 bills per page)
-
-API docs: [samples/nukkad-sales-api-fnb-v5.pdf](samples/nukkad-sales-api-fnb-v5.pdf), [samples/nukkad-sales-api-retail-v4.pdf](samples/nukkad-sales-api-retail-v4.pdf)
-
-### F&B-only fields (not in Retail)
-
-The F&B API returns richer data relevant to fraud detection:
-
-| Field | Type | Description | Fraud relevance |
-|-------|------|-------------|-----------------|
-| `isComplementary` | string | "Yes"/"No" — complimentary bill | Complementary order rule |
-| `status` | string | "Completed" | Bill status tracking |
-| `waiterName` | string | Waiter/staff who served | Employee attribution |
-| `tblName` / `tblCode` | string/int | Table name and code | Dine-in context |
-| `tokenNum` | int | Token number | Order tracking |
-| `paxCnt` | int | Pax (guest) count | Customer count per bill |
-| `cancelDate` / `cancelTime` | string | When bill was cancelled | Cancellation detection |
-| `voidReason` | string | Reason for void | Void rule with reason |
-| `tipAmt` | number | Tip amount | Transaction total accuracy |
-| `returnAmt` | number | Return/refund amount | Refund detection |
-| `charges[]` | array | Service charges, delivery charges | `{chargeName, amount}` |
-| `complementaryRemarks` | string | Reason for complementary bill | Complementary audit |
-| `dealData[]` | array | Combo deals with nested items | Deal pricing fraud |
-| `modifierInfo[]` | array | Item modifiers (add-ons) | Modifier pricing |
-| payModes: `cardNo` | string | Card number (masked) | Payment verification |
-| payModes: `approvalCode` | string | Card approval code | Payment verification |
-| payModes: `returnAmt` | number | Return amount per pay mode | Per-mode refund tracking |
-
-### Retail-only differences
-
-- No `isComplementary`, `waiterName`, `tblName`, `tokenNum`, `paxCnt`, `cancelDate/Time`, `voidReason`, `tipAmt`, `charges[]`, `complementaryRemarks`, `dealData[]`, `modifierInfo[]`
-- Simpler payment: no `cardNo`, `approvalCode`, `returnAmt` per payMode
-- `billType` values: "Sale", "Cancel"
-- `billSource` values: "POS", "MPOS"
-- Uses `cashierDetails` object (name, mobile, email) instead of flat `cashierName`/`staffId`
-
-### Implementation note
-
-The `SalesPoller` needs to detect store type (F&B vs Retail from `stores.json` `pos_system` field) and use the correct base URL. F&B stores have significantly richer fraud data from the pull API — `voidReason`, `cancelDate`, `isComplementary`, `returnAmt`, and `charges` are all usable by the fraud engine even without the push API.
-
-### Bill schema
-
-Full sample: [samples/nukkad-sales-api-response.json](samples/nukkad-sales-api-response.json)
-
-**Bill-level fields:**
-
-| Field | Type | Example | Notes |
-|-------|------|---------|-------|
-| nscin | string | `"NSCIN8227"` | Store identifier (CIN code) |
-| billNo | string | `"N2023D/2526/10032"` | Unique bill number — dedup key |
-| consumerName | string | `"Mr Abdul Sameer"` | Customer name (when available) |
-| consumerMobile | string | `"9207259731"` | Customer mobile |
-| cashierDetails | object | `{cashierName, mobile, email}` | Cashier who processed the bill |
-| billType | string | `"Sale"` | Observed values: `Sale` |
-| billSource | string | `"POS"` | |
-| billDate | string | `"2025-12-15"` | YYYY-MM-DD |
-| billTime | string | `"11:59:21"` | HH:MM:SS |
-| billSyncTime | string | `"2025-12-15 11:58:35"` | When bill synced to Nukkad cloud |
-| terminalNo | string | `"POS4"` | POS terminal — maps to SellerWindowId via mapping.json |
-| saleAmt | number | `470` | Gross sale amount |
-| discAmt | number | `0` | Discount amount |
-| totalDiscPercent | number | `0` | Discount percentage |
-| netSaleAmt | number | `470` | Net after discount |
-| taxAmnt | number | `22.38` | Total tax |
-| roundingAmnt | number | `0` | Rounding adjustment |
-| refundReason | string | `""` | Reason if refund |
-| boardingPassDetails | array | `[]` | Passenger boarding pass data (when captured) |
-| offerName / offerDesc / offerType | string | `""` | Offer applied to bill |
-| offerDiscount | number | `0` | Offer discount amount |
-
-**Item fields (per `items[]`):**
-
-| Field | Type | Example | Notes |
-|-------|------|---------|-------|
-| name | string | `"Non AC Dor 6hrs"` | Item name |
-| category / subcategory | string | `"Miscellaneous"` | Product category |
-| productCode | string | `"HAL001"` | Internal product code |
-| qty | number | `1` | Quantity |
-| sp | number | `470` | Selling price |
-| mrp | number | `470` | Maximum retail price |
-| discount | number | `0` | Per-item discount amount |
-| discountPer | number | `0` | Per-item discount % |
-| taxType | string | `"CGST + SGST"` | Tax type applied |
-| tax | number | `5` | Tax rate % |
-| taxBreakUp | array | `[{type, tax, taxableAmt, taxAmt, cgst, sgst, igst}]` | Detailed tax breakdown |
-| hsnCode | string | `"996329"` | HSN code for GST |
-
-**Payment mode fields (per `payModes[]`):**
-
-| Field | Type | Example | Notes |
-|-------|------|---------|-------|
-| mode | string | `"Phonepe"` | Payment method. Observed: `Cash`, `Card`, `Phonepe`, `Return Amount` |
-| tenderCode | string | `"111"` | Tender code |
-| amt | number | `470` | Amount paid via this mode |
-| cnvRate | number | `1` | Conversion rate |
-| currency | string | `"INR"` | Currency code |
-
-### What the sales API gives vs what the push API gives
-
-| Data point | Sales API (poll) | Push API (real-time) |
-|-----------|-----------------|---------------------|
-| Timing | Aggregated bill after completion | Per-event as it happens |
-| Items | Per-item with name, qty, price, discount, tax | Per-item with scanAttribute, itemAttribute, discountType, grantedBy |
-| Payments | Per-mode with amount | Per-line with lineAttribute enum (Cash/CreditCard/UPI/etc.), cardType |
-| Manual entry detection | Not available | `scanAttribute: ManuallyEntered` |
-| Manual discount detection | Not available | `discountType: ManuallyEnteredValue` |
-| Drawer events | Not available | `transactionType: DrawerOpenedOutsideATransaction` |
-| Reprint | Not available | `BillReprint` event |
-| Transaction lifecycle | Not available (only completed bills) | `AddTransactionEvent` (suspended/resumed/cancelled) |
-| Customer details | consumerName, consumerMobile, boardingPassDetails | debitor field (TBD) |
-| Cashier details | cashierName, mobile, email | cashier ID only |
-
-The sales API is richer on customer/cashier contact details. The push API is richer on transaction behavior signals (manual entry, discounts, lifecycle events). Both are needed.
-
-See `sales_poller.py` in the backend repo for the current implementation.

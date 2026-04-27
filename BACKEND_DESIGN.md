@@ -12,32 +12,25 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for system topology and hardware. See [CV
 
 ## 2. Nukkad Event Receiver
 
-Nukkad pushes events to a single endpoint. Auth is an `x-authorization-key` header.
+Nukkad pushes events to **nine event-typed endpoints, one per RLCC API event**. Auth is an `x-authorization-key` header on every request. Body is `application/json`; the receiver also accepts a stringified-JSON body (Nukkad docs say "all APIs need to be stringified" — receiver tolerates both forms).
 
-**Open question:** Nukkad docs say "all APIs need to be stringified." This likely means the JSON body is stringified inside a wrapper field. Pending clarification on exact format.
+The payload's `event` field must match the route, otherwise the request is rejected with HTTP 400. Each route is a thin wrapper around a shared ingest pipeline (auth → parse → dedupe → dispatch); the URL determines which event handler runs.
 
-### Endpoint
+### Endpoints
 
-```
-POST /v1/rlcc/launch-event
-```
+| Event | Path | Action |
+|---|---|---|
+| `BeginTransactionWithTillLookup`       | `POST /v1/rlcc/begin-transaction-with-till-lookup` | Open a new transaction session |
+| `AddTransactionSaleLine`               | `POST /v1/rlcc/add-transaction-sale-line` | Add item to session |
+| `AddTransactionSaleLineWithTillLookup` | `POST /v1/rlcc/add-transaction-sale-line-with-till-lookup` | Add item with till resolution |
+| `AddTransactionPaymentLine`            | `POST /v1/rlcc/add-transaction-payment-line` | Add payment to session |
+| `AddTransactionEvent`                  | `POST /v1/rlcc/add-transaction-event` | Lifecycle event (Suspended, Resumed, Cancelled) |
+| `AddTransactionTotalLine`              | `POST /v1/rlcc/add-transaction-total-line` | Add total line (SubTotal, VAT, TotalDiscount, TotalAmountToBePaid, TotalEmployeeDiscount) |
+| `CommitTransaction`                    | `POST /v1/rlcc/commit-transaction` | Seal the transaction, trigger correlation + fraud rules |
+| `BillReprint`                          | `POST /v1/rlcc/bill-reprint` | Immediate alert, no assembly needed |
+| `GetTill`                              | `POST /v1/rlcc/get-till` | Till lookup (not a transaction event) |
 
-### Routing
-
-The `event` field in the payload determines what happens:
-
-| Event | Action |
-|-------|--------|
-| `BeginTransactionWithTillLookup` | Open a new transaction session |
-| `AddTransactionSaleLine` / `AddTransactionSaleLineWithTillLookup` | Add item to session |
-| `AddTransactionPaymentLine` | Add payment to session |
-| `AddTransactionEvent` | Lifecycle event (Suspended, Resumed, Cancelled) |
-| `AddTransactionTotalLine` | Add total line (SubTotal, VAT, TotalDiscount, TotalAmountToBePaid, TotalEmployeeDiscount) |
-| `CommitTransaction` | Seal the transaction, trigger correlation + fraud rules |
-| `BillReprint` | Immediate alert, no assembly needed |
-| `GetTill` | Till lookup (not a transaction event) |
-
-All events for a transaction share a `transactionSessionId`. The receiver routes each event to the Transaction Assembler by that ID.
+All events for a transaction share a `transactionSessionId`. The receiver routes each event to the Transaction Assembler by that ID. Field-level schemas are in [INTEGRATION.md](INTEGRATION.md) §1 (mirrored from `RLCC API Documentation.pdf` §4).
 
 ---
 
@@ -194,10 +187,10 @@ Fire on assembled transaction data alone. No CV signal needed.
 Employee purchase (rule 18) is not fraud by itself but tracked for audit visibility.
 
 **Rule limitations:**
-- **Rule 3 (Complementary order):** F&B pull API only. The push API does not include an isComplementary field. This rule does not fire for push-assembled transactions.
-- **Rule 11 (Self-granted discount):** Requires grantedBy to use the same identifier format as cashier_id on the transaction header. If Nukkad uses names for grantedBy and IDs for cashier, a mapping table is needed. Verify with Nukkad.
-- **Rule 20 (Outside opening hours):** Requires store opening hours configuration (not yet in stores.json). Add opening_hours per store to enable this rule.
-- **Rule 22 (Manual credit card entry):** Speculative — the push API does not have a 'manual card entry' indicator. This rule can only fire if the payment line's card data indicates manual entry (e.g., no approvalCode but card payment present). Needs Nukkad clarification.
+- **Rule 3 (Complementary order):** The RLCC push spec has no `isComplementary` flag on any of the 9 events. Disabled until Nukkad confirms whether a `transactionType` value, `lineAttribute`, or `eventDescription` text reliably signals a complimentary bill in their push stream.
+- **Rule 11 (Self-granted discount):** Requires `grantedBy` (on `AddTransactionSaleLine`) to use the same identifier format as `cashier` on `BeginTransactionWithTillLookup`. If Nukkad uses names for grantedBy and IDs for cashier, a mapping table is needed. Verify with Nukkad.
+- **Rule 20 (Outside opening hours):** Requires store opening hours configuration (not yet in stores.json). Add opening_hours per store to enable this rule. The push spec does provide `outsideOpeningHours` on `BeginTransactionWithTillLookup`; if Nukkad populates it, prefer that over locally-configured hours.
+- **Rule 22 (Manual credit card entry):** The RLCC push spec has no 'manual card entry' indicator on `AddTransactionPaymentLine`. The rule can only fire heuristically (e.g., card payment present with no `cardType` or no `paymentTypeID`). Needs Nukkad confirmation before enabling in production.
 
 ### CV-Only Rules
 
@@ -292,7 +285,7 @@ Fetched via `GET /api/transactions/{id}/timeline`. Each `sale_line` entry carrie
 | started_at | datetime | |
 | committed_at | datetime | nullable |
 | bill_number | string | from CommitTransaction, nullable |
-| source | enum | push_assembled / poll_reconciled / poll_primary_arms — how this transaction was ingested |
+| source | enum | `push_assembled` (sole source — every transaction is built from the 9-endpoint push stream) |
 | is_previous_transaction | bool | for returns/exchanges |
 | linked_transaction_id | string | nullable |
 | risk_level | enum | High / Medium / Low |
@@ -303,15 +296,6 @@ Fetched via `GET /api/transactions/{id}/timeline`. Each `sale_line` entry carrie
 | cv_receipt_detected | bool | From correlation (per-POS bill zone) |
 | cv_non_seller_count | int | Peak count from correlation (camera-wide) |
 | cv_confidence | enum | HIGH (single-POS camera) / REDUCED (multi-POS camera) / UNAVAILABLE (CV data gap) |
-
-Note: `poll_reconciled` transactions have null values for push-API-only fields (`scan_attribute`, `item_attribute`, `discount_type`, `granted_by` on SaleLines). Only the original 9 fraud rules fire for poll-sourced transactions.
-
-**Reconciliation merge logic:**
-- Push-assembled transactions have `billNumber` from CommitTransaction.
-- Pull-fetched bills have `billNo`.
-- Reconciliation matches by `billNumber == billNo`.
-- If a pull bill has no matching push transaction, create a new TransactionSession with `source=poll_reconciled`.
-- If a push transaction already exists for that billNumber, skip (push data is richer).
 
 ### SaleLine
 
@@ -421,9 +405,19 @@ These fields allow the dashboard to request video playback for CV-only alerts (w
 
 ### Nukkad Receiver (inbound)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/v1/rlcc/launch-event` | Accepts all Nukkad push events |
+Nine endpoints, one per RLCC event. See §2 for the routing table.
+
+| Method | Path | Event |
+|--------|------|-------|
+| POST | `/v1/rlcc/begin-transaction-with-till-lookup`        | `BeginTransactionWithTillLookup` |
+| POST | `/v1/rlcc/add-transaction-event`                     | `AddTransactionEvent` |
+| POST | `/v1/rlcc/add-transaction-payment-line`              | `AddTransactionPaymentLine` |
+| POST | `/v1/rlcc/add-transaction-sale-line`                 | `AddTransactionSaleLine` |
+| POST | `/v1/rlcc/add-transaction-sale-line-with-till-lookup`| `AddTransactionSaleLineWithTillLookup` |
+| POST | `/v1/rlcc/add-transaction-total-line`                | `AddTransactionTotalLine` |
+| POST | `/v1/rlcc/commit-transaction`                        | `CommitTransaction` |
+| POST | `/v1/rlcc/get-till`                                  | `GetTill` |
+| POST | `/v1/rlcc/bill-reprint`                              | `BillReprint` |
 
 ### Dashboard REST API
 
@@ -439,7 +433,7 @@ These fields allow the dashboard to request video playback for CV-only alerts (w
 | POST | `/api/config` | Update rule thresholds + enable/disable rules |
 | GET | `/api/reports/store-daily` | Store daily summary |
 | GET | `/api/reports/employee-scorecard` | Per-employee metrics |
-| GET | `/api/history?days=N` | Backfill historical data |
+| GET | `/api/history?days=N` | Date-filtered read of persisted push-assembled transactions (no external pull). |
 
 ### Dashboard WebSocket
 
@@ -460,32 +454,7 @@ These fields allow the dashboard to request video playback for CV-only alerts (w
 
 ---
 
-## 10. Sales Data API (Existing Pull-Based Integration)
-
-The existing Nukkad sales data API (polled by `SalesPoller`) is not replaced by the push API. It serves three purposes:
-
-**Primary source for ARMS POS stores.** The push API does not cover ARMS. Stores with `pos_system: "ARMS-Dino"` continue on pull-based 2-minute polling. The fraud engine accepts transactions from both paths: assembled from push events (granular) or from polled bill data (aggregated). Same rules, same alert pipeline — but polled bills lack per-item `scanAttribute`, `discountType`, and `itemAttribute` enums, so the new rules (manual entry, manual discount, etc.) only fire for push API stores.
-
-**Historical backfill.** When a new store comes online or the system is redeployed, the push API won't replay past events. The sales data API fetches completed bills for the past N days via `SalesPoller.fetch_historical(days)`. This populates the transaction history so the dashboard isn't empty on day one.
-
-**Reconciliation.** If our server was down and Nukkad didn't retry push events, those transactions are lost from the push stream. A periodic reconciliation job polls the sales data API for completed bills, compares against assembled transactions by `billNumber`, and backfills any gaps. This runs hourly (configurable) and catches any push API misses.
-
-```
-Nukkad Push API (real-time, per-item, per-payment)
-    → Primary ingest for Posifly POS stores
-    → Events arrive in seconds, full enum detail
-    → 29 fraud rules applicable
-
-Nukkad Sales Data API (poll every 2 min, aggregated bills)
-    → Primary ingest for ARMS POS stores
-    → Historical backfill on deploy/restart
-    → Hourly reconciliation to catch push API gaps
-    → 9 original fraud rules applicable (less granular data)
-```
-
----
-
-## 11. Resilience & Failure Handling
+## 10. Resilience & Failure Handling
 
 ### Assembler state persistence
 
@@ -505,6 +474,8 @@ CommitTransaction waits 500ms after sealing the session before handing it to the
 
 Sessions that hit the 30-minute timeout with sale lines present are not silently discarded. They generate an "Abandoned Transaction" alert. Available fraud rules still run on the partial data — a session with 10 voided items and no commit is still worth flagging.
 
+There is no external pull source to reconcile against. If Nukkad's POS-side queue drops a `CommitTransaction` and never retries, the session times out as Abandoned and stays that way — there is no second-channel "did the bill actually complete?" check. Recovery depends entirely on Nukkad's retry/queue policy (open question in [INTEGRATION.md](INTEGRATION.md) §1).
+
 ### MQTT QoS
 
 QoS 1 (at least once) for all topics. CV signals are idempotent snapshots — the latest frame's signal for a zone completely supersedes the previous one, so duplicates are harmless. QoS 1 ensures delivery across brief network hiccups without the overhead of QoS 2's four-step handshake.
@@ -517,11 +488,11 @@ If the server restarts, recent CV aggregation state (the in-memory signal window
 
 All timestamps are normalized to UTC internally:
 - CV signals: already UTC (ISO 8601 with Z)
-- Nukkad push events: timezone TBD (pending clarification). Assumed IST (UTC+5:30) based on deployment location. Converted to UTC on receipt.
-- Nukkad sales API: local time without timezone indicator. Assumed IST. Converted to UTC on receipt.
+- Nukkad push events (`transactionTimeStamp`, `lineTimeStamp`): timezone TBD (pending clarification). Assumed IST (UTC+5:30) based on deployment location. Converted to UTC on receipt.
+- `BillReprint.transactionTimestamp`: spec says `Long` milliseconds since epoch — interpreted as UTC.
 - Server timestamps (received_at): UTC
 
-If Nukkad confirms their push API uses UTC, remove the IST conversion. The correlation engine, event timeline, and reconciliation all operate in UTC internally. Dashboard converts to local time for display.
+If Nukkad confirms their push API uses UTC, remove the IST conversion. The correlation engine, event timeline, and persistence layer all operate in UTC internally. Dashboard converts to local time for display.
 
 ### Clock skew
 

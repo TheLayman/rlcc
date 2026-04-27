@@ -6,7 +6,7 @@ Single machine. Tesla T4 (16 GB VRAM), 32 GB RAM. Runs everything: CV inference,
 
 ## Scope
 
-5 stores, 1 camera per store (POS-facing), 5 RTSP streams total. All Posifly POS (push API supported). Existing 3 stores have RTSP URLs, mappings, and zone polygons. 2 new stores need zone polygons drawn (5 min each via zone tool).
+5 stores, 1 camera per store (POS-facing), 5 RTSP streams total — all on the Dino POS pushing to our 9 RLCC endpoints. RTSP URLs and zone polygons configured directly on the server.
 
 ## Architecture
 
@@ -27,12 +27,11 @@ Single machine. Tesla T4 (16 GB VRAM), 32 GB RAM. Runs everything: CV inference,
 │       │                                         │
 │       ▼ Redis pub/sub                           │
 │  Backend (FastAPI)                              │
-│    Nukkad push receiver                         │
+│    Nukkad push receiver (9 RLCC endpoints)      │
 │    CV signal consumer                           │
 │    Transaction assembler                        │
 │    Correlation engine                           │
 │    Fraud engine (29 rules)                      │
-│    Sales API poller (reconciliation)            │
 │    Event timeline builder                       │
 │    REST API + WebSocket                         │
 │    Serves React dashboard                       │
@@ -147,20 +146,18 @@ FastAPI. Evolves existing `Retail-Trust-Backend-Service`.
 
 | Component | What it does |
 |-----------|-------------|
-| Nukkad push receiver | `POST /v1/rlcc/launch-event` — accepts push events, routes by event type |
+| Nukkad push receiver | 9 endpoints, one per RLCC event type — `POST /v1/rlcc/{begin-transaction-with-till-lookup, add-transaction-event, add-transaction-payment-line, add-transaction-sale-line, add-transaction-sale-line-with-till-lookup, add-transaction-total-line, commit-transaction, get-till, bill-reprint}`. Each route runs the same auth → parse → dedupe → dispatch pipeline. |
 | Transaction assembler | Accumulates events per `transactionSessionId` until CommitTransaction. States: OPEN → COMMITTED → EXPIRED. Raw events to WAL. |
 | CV signal consumer | Subscribes to Redis `cv:*` channels, aggregates into 30s windows per POS zone |
 | Correlation engine | On CommitTransaction: look up CV windows for matching POS zone + time range. Attach non_seller_present, receipt_detected, cv_confidence. |
 | Fraud engine | 29 rules (20 EPOS-only, 2 CV-only, 4 cross-validation, 3 additional). Feed-down suppression. Risk escalation matrix. |
 | Event timeline | Merge POS events + CV signals per transaction, sorted by timestamp |
-| Reconciliation job | Hourly poll of Nukkad sales API, compare by billNumber, backfill gaps |
 | Video snippet extractor | On flag: slice rolling buffer segments, concat+trim with ffmpeg, save MP4 |
 | Video endpoint | `GET /api/transactions/{id}/video` — serves snippet MP4 directly |
 
 **What carries over from existing backend:**
 - FastAPI app setup, CORS, static file serving
 - WebSocket broadcaster (`ConnectionManager`)
-- `SalesPoller` (refactored for reconciliation role)
 - `stores.json` config loading
 - Alert workflow (resolve with status + remarks)
 - Dashboard API endpoints (`/api/transactions`, `/api/alerts`, `/api/config`, `/api/stores`)
@@ -168,10 +165,11 @@ FastAPI. Evolves existing `Retail-Trust-Backend-Service`.
 - JSONL persistence (`append_jsonl`, `read_jsonl`, `update_jsonl_record`)
 
 **What's replaced:**
-- `scheduled_data_processor` (2-min batch poll+correlate) → push receiver + event-driven correlation
+- `scheduled_data_processor` (2-min batch poll+correlate) → 9-endpoint push receiver + event-driven correlation
 - `fraud_engine.py` (9 rules on aggregated bills) → new fraud engine (29 rules on per-item/per-payment data)
-- `models.py` → new data models with `source` field, per-item SaleLine, per-payment PaymentLine
+- `models.py` → new data models with per-item SaleLine, per-payment PaymentLine
 - `mapping.json` → `camera_mapping.json` (three-way: SellerWindowId ↔ camera_id ↔ XProtect device_id)
+- `SalesPoller` (sales-data pull) → removed entirely; no pull integration on either side
 
 **Storage:** JSONL on disk. Same as today. Daily rotation. PostgreSQL deferred.
 
@@ -226,12 +224,11 @@ Machine is at ~1% GPU, ~20% RAM. 90 days of snippets + data = ~30 GB. Trivial.
 
 | Item | From | Status |
 |------|------|--------|
-| Nukkad push endpoint → our receiver URL | Nukkad | **Need** — they configure staging to push to `https://{our-box}:8001/v1/rlcc/launch-event` |
-| Nukkad sales API token | Nukkad | **Have** — already used by SalesPoller |
-| RTSP URLs for 5 stores | WAISL | **Have** — 3 existing + 2 to add |
-| Camera-to-POS mapping | Us | **Have** — 3 existing, 2 new drawn via zone tool |
-| Zone polygons | Us | **Have** — 3 existing, 2 new drawn via zone tool |
-| Store CIN codes | Nukkad | **Have** — in stores.json (NDCIN prefix for Posifly stores) |
+| Nukkad push endpoints → our receiver URL | Nukkad | **Need** — they configure staging to push to `https://{our-box}:8001/v1/rlcc/*` (the 9 event-typed paths) |
+| RTSP URLs for 5 stores | WAISL | **Have** — configured directly on the server |
+| Camera-to-POS mapping | Us | **Have** — maintained in `camera_mapping.json` on the server |
+| Zone polygons | Us | **Have** — drawn via dashboard zone tool |
+| Store CIN codes | Nukkad | **Have** — in `stores.json`, edited on the server |
 
 **Resolved:** "Stringified" JSON format — confirmed stringified. Receiver parses outer string, then JSON-decodes the inner payload.
 
@@ -304,12 +301,6 @@ Check: `curl http://localhost:8001/api/transactions | python3 -m json.tool`
 - Stream Viewer: raw CV + POS events (debug)
 - Video player: `<video>` tag with event timeline sync (click event → seek video)
 
-**4. Reconciler** (hourly sales API poll)
-- Poll Nukkad sales API (F&B + Retail endpoints)
-- Compare against push-assembled transactions by billNumber
-- Backfill gaps
-- Not urgent until Nukkad push is live
-
 ## Build plan
 
 ### Completed
@@ -344,14 +335,14 @@ Backend, dashboard, and fraud engine code is production code from day one. CV in
 
 ## 5 POC stores
 
-Picking from Posifly stores (push API supported):
+All five run the Dino POS and push to our 9 RLCC endpoints.
 
-| CIN | Store | POS System | RTSP | Zones |
-|-----|-------|-----------|------|-------|
-| NDCIN1223 | Ram Ki Bandi | Posifly-Dino | Have | Have |
-| NSCIN8227 | Encalm Lounge | Posifly-Dino | Have | Have |
-| NDCIN1227 | KFC | Posifly-Dino | Have | Have |
-| TBD | Store 4 | Posifly-Dino | Have | Draw |
-| TBD | Store 5 | Posifly-Dino | Have | Draw |
+| # | CIN | Store | Location | Category | Notes |
+|---|-----|-------|----------|----------|-------|
+| 1 | NDCIN1231 | Nizami Daawat | Aero Plaza | F&B – QSR | No camera assigned yet — push-only until RTSP wired up. |
+| 2 | NDCIN1422 | Cafe Niloufer | Airport Village | F&B – QSR & Dine In | Camera + RTSP configured on server. |
+| 3 | NDCIN2082 | Krispy Kreme | Aero Plaza | F&B – Bakery | Camera + RTSP configured on server. |
+| 4 | NDCIN2123 | Visitor Gallery | Fore Court | Services – Airport Entry Ticket | Included in scope despite "Services" classification (Dino POS counter behaves like F&B at the till). |
+| 5 | NDCIN2071 | Frank Hot Dog | Airport Village | F&B – QSR | Camera + RTSP configured on server. |
 
-First 3 are the existing POC stores. Store 4 and 5 selected based on which cameras WAISL confirms are POS-facing.
+The previous POC seed (Ram Ki Bandi, KFC, Haldiram's-AeroPlaza) is dropped — replaced by the airport rollout list above.

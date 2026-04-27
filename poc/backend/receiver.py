@@ -111,19 +111,15 @@ def _persist_committed_transaction(txn: TransactionSession, alerts: list[Alert])
     if existing and existing.source == "push_assembled":
         return False
 
-    replace_ids: set[str] = set()
-    if existing and existing.source.startswith("poll_"):
-        replace_ids.add(existing.id)
-
     transactions = [
         current
         for current in load_transactions()
-        if current.id not in replace_ids and current.id != txn.id and current.bill_number != txn.bill_number
+        if current.id != txn.id and current.bill_number != txn.bill_number
     ]
     current_alerts = [
         alert
         for alert in load_alerts()
-        if alert.transaction_id not in replace_ids and alert.transaction_id != txn.id
+        if alert.transaction_id != txn.id
     ]
 
     transactions.append(txn)
@@ -133,8 +129,7 @@ def _persist_committed_transaction(txn: TransactionSession, alerts: list[Alert])
     return True
 
 
-@router.post("/v1/rlcc/launch-event")
-async def receive_event(request: Request):
+async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
     expected_key = deps.settings.push_auth_key
     provided_key = request.headers.get("x-authorization-key", "")
     if expected_key and provided_key != expected_key:
@@ -144,14 +139,20 @@ async def receive_event(request: Request):
     if error:
         return JSONResponse(status_code=400, content={"message": error})
 
-    deps.storage.append_event(payload)
+    body_event = payload.get("event", "")
+    if body_event and body_event != expected_event:
+        return JSONResponse(
+            status_code=400,
+            content={"message": f"event mismatch: route expects {expected_event}, payload says {body_event}"},
+        )
+    payload.setdefault("event", expected_event)
 
     if deps.storage.is_duplicate(payload):
         await _broadcast_raw_pos()
         return {"status": 200, "message": "duplicate, ignored"}
+    deps.storage.append_event(payload)
     deps.storage.mark_seen(payload)
 
-    event_type = payload.get("event", "")
     store_id = payload.get("storeIdentifier", "")
     pos_terminal_no = payload.get("posTerminalNo", "")
     cashier_id = payload.get("cashier", "")
@@ -160,26 +161,26 @@ async def receive_event(request: Request):
         deps.fraud_engine.record_nukkad_event(store_id)
 
     try:
-        if event_type == "BeginTransactionWithTillLookup":
+        if expected_event == "BeginTransactionWithTillLookup":
             deps.assembler.begin(payload)
 
-        elif event_type in {"AddTransactionSaleLine", "AddTransactionSaleLineWithTillLookup"}:
+        elif expected_event in {"AddTransactionSaleLine", "AddTransactionSaleLineWithTillLookup"}:
             deps.assembler.add_sale_line(payload)
 
-        elif event_type == "AddTransactionPaymentLine":
+        elif expected_event == "AddTransactionPaymentLine":
             deps.assembler.add_payment_line(payload)
 
-        elif event_type == "AddTransactionTotalLine":
+        elif expected_event == "AddTransactionTotalLine":
             deps.assembler.add_total_line(payload)
 
-        elif event_type == "AddTransactionEvent":
+        elif expected_event == "AddTransactionEvent":
             deps.assembler.add_event(payload)
 
-        elif event_type == "GetTill":
+        elif expected_event == "GetTill":
             await _broadcast_raw_pos()
             return {"status": 200, "message": "GetTill acknowledged"}
 
-        elif event_type == "CommitTransaction":
+        elif expected_event == "CommitTransaction":
             txn = deps.assembler.commit(payload)
             if txn:
                 txn = _hydrate_transaction(txn)
@@ -200,7 +201,7 @@ async def receive_event(request: Request):
                     for alert in alerts:
                         await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
 
-        elif event_type == "BillReprint":
+        elif expected_event == "BillReprint":
             event_ts = _parse_ts(payload.get("transactionTimeStamp"))
             clip_path, camera_id = await asyncio.to_thread(
                 _extract_event_clip,
@@ -228,8 +229,32 @@ async def receive_event(request: Request):
     except ValueError as exc:
         return JSONResponse(
             status_code=400,
-            content={"message": f"invalid {event_type} payload: {exc}"},
+            content={"message": f"invalid {expected_event} payload: {exc}"},
         )
 
     await _broadcast_raw_pos()
-    return {"status": 200, "message": "Success", "event": event_type}
+    return {"status": 200, "message": "Success", "event": expected_event}
+
+
+ROUTES: list[tuple[str, str]] = [
+    ("/v1/rlcc/begin-transaction-with-till-lookup",         "BeginTransactionWithTillLookup"),
+    ("/v1/rlcc/add-transaction-event",                      "AddTransactionEvent"),
+    ("/v1/rlcc/add-transaction-payment-line",               "AddTransactionPaymentLine"),
+    ("/v1/rlcc/add-transaction-sale-line",                  "AddTransactionSaleLine"),
+    ("/v1/rlcc/add-transaction-sale-line-with-till-lookup", "AddTransactionSaleLineWithTillLookup"),
+    ("/v1/rlcc/add-transaction-total-line",                 "AddTransactionTotalLine"),
+    ("/v1/rlcc/commit-transaction",                         "CommitTransaction"),
+    ("/v1/rlcc/get-till",                                   "GetTill"),
+    ("/v1/rlcc/bill-reprint",                               "BillReprint"),
+]
+
+
+def _make_handler(event: str):
+    async def handler(request: Request):
+        return await _ingest(request, event)
+    handler.__name__ = f"receive_{event}"
+    return handler
+
+
+for _path, _event in ROUTES:
+    router.add_api_route(_path, _make_handler(_event), methods=["POST"])
