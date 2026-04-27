@@ -1,7 +1,4 @@
 [
-  {"cin": "NDCIN1223", "name": "Ram Ki Bandi", "pos_system": "Posifly-Dino", "operator": "Devyani International Limited"},
-  {"cin": "NDCIN1227", "name": "KFC", "pos_system": "Posifly-Dino", "operator": "Devyani International Limited"},
-  {"cin": "NDCIN1228", "name": "Haldiram's-AeroPlaza", "pos_system": "Posifly-Dino", "operator": "Oam Industries (India) Private Limited"},
   {"cin": "NDCIN1231", "name": "Nizami Daawat", "pos_system": "Posifly-Dino", "operator": "Zoha Foods Private Limited"},
   {"cin": "NDCIN1422", "name": "Cafe Niloufer", "pos_system": "Posifly-Dino", "operator": ""},
   {"cin": "NDCIN2082", "name": "Krispy Kreme", "pos_system": "Posifly-Dino", "operator": ""},
