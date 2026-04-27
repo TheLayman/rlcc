@@ -57,6 +57,50 @@ def _parse_ts(value: str | None) -> datetime | None:
         return None
 
 
+def _parse_ts_or_ms(value) -> datetime | None:
+    """Accept ISO 8601 strings or numeric epoch milliseconds.
+
+    BillReprint's `transactionTimestamp` is spec'd as Long ms; other events use
+    ISO 8601 strings on `transactionTimeStamp`. This helper covers both.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc)
+    if isinstance(value, str):
+        # Try ISO 8601 first; fall back to numeric-string interpretation.
+        iso = _parse_ts(value)
+        if iso is not None:
+            return iso
+        try:
+            return datetime.fromtimestamp(int(value) / 1000.0, tz=timezone.utc)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _resolve_till(store_id: str, till_description: str) -> str:
+    """Look up a till identifier from camera_mapping for a (store, tillDescription).
+
+    Returns the matched POS terminal number (echoed as the till), or "" if
+    nothing matches. We match `tillDescription` against either
+    `display_pos_label` or `pos_terminal_no` since real configs use both.
+    """
+    if not store_id or not till_description:
+        return ""
+    needle = till_description.strip().lower()
+    for camera in deps.config.cameras:
+        if camera.store_id != store_id:
+            continue
+        candidates = (
+            (camera.display_pos_label or "").strip().lower(),
+            (camera.pos_terminal_no or "").strip().lower(),
+        )
+        if needle in candidates:
+            return camera.pos_terminal_no or camera.display_pos_label
+    return ""
+
+
 def _camera_for(store_id: str, pos_terminal_no: str):
     return deps.config.get_camera_by_terminal(store_id, pos_terminal_no)
 
@@ -163,6 +207,16 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
     try:
         if expected_event == "BeginTransactionWithTillLookup":
             deps.assembler.begin(payload)
+            await _broadcast_raw_pos()
+            return {
+                "status": 200,
+                "message": "Success",
+                "data": {
+                    "ErrorCode": "-1",
+                    "Succeeded": "true",
+                    "TransactionSessionId": payload.get("transactionSessionId", ""),
+                },
+            }
 
         elif expected_event in {"AddTransactionSaleLine", "AddTransactionSaleLineWithTillLookup"}:
             deps.assembler.add_sale_line(payload)
@@ -177,8 +231,26 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
             deps.assembler.add_event(payload)
 
         elif expected_event == "GetTill":
+            till = _resolve_till(store_id, payload.get("tillDescription", ""))
             await _broadcast_raw_pos()
-            return {"status": 200, "message": "GetTill acknowledged"}
+            if till:
+                return {
+                    "status": 200,
+                    "message": "Success",
+                    "data": {"ErrorCode": "-1", "Succeeded": "true", "Till": till},
+                }
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": 400,
+                    "message": "Failure",
+                    "data": {
+                        "ErrorCode": "11",
+                        "ErrorDescription": "No Till found with the specified Branch and Description.",
+                        "Succeeded": "false",
+                    },
+                },
+            )
 
         elif expected_event == "CommitTransaction":
             txn = deps.assembler.commit(payload)
@@ -202,16 +274,28 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
                         await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
 
         elif expected_event == "BillReprint":
-            event_ts = _parse_ts(payload.get("transactionTimeStamp"))
+            # Spec §4.9 uses `billNumber` and `transactionTimestamp` (Long ms).
+            # Earlier code read `transactionNumber` and ISO-only timestamps —
+            # tolerate both shapes so we don't lose data if Nukkad's payload
+            # casing varies.
+            bill_number = (
+                payload.get("billNumber")
+                or payload.get("transactionNumber")
+                or ""
+            )
+            event_ts = (
+                _parse_ts_or_ms(payload.get("transactionTimestamp"))
+                or _parse_ts_or_ms(payload.get("transactionTimeStamp"))
+            )
             clip_path, camera_id = await asyncio.to_thread(
                 _extract_event_clip,
-                clip_id=f"bill-reprint-{payload.get('transactionNumber', 'unknown')}",
+                clip_id=f"bill-reprint-{bill_number or 'unknown'}",
                 store_id=store_id,
                 pos_terminal_no=pos_terminal_no,
                 at=event_ts,
             )
             alert = Alert(
-                transaction_id=payload.get("transactionNumber", ""),
+                transaction_id=bill_number,
                 store_id=store_id,
                 store_name=deps.config.get_store_name(store_id),
                 pos_terminal_no=pos_terminal_no,

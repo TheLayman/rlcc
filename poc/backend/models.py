@@ -20,7 +20,7 @@ class SaleLine(BaseModel):
     line_number: int = 0
     item_id: str = ""
     item_description: str = ""
-    item_quantity: int = 0
+    item_quantity: float = 0.0
     item_unit_price: float = 0.0
     total_amount: float = 0.0
     scan_attribute: str = "None"
@@ -36,7 +36,9 @@ class SaleLine(BaseModel):
             line_number=payload.get("lineNumber", 0),
             item_id=payload.get("itemID", ""),
             item_description=payload.get("itemDescription", ""),
-            item_quantity=int(payload.get("itemQuantity", 0) or 0),
+            # Float, not int: spec marks itemQuantity as integer but real grocery
+            # POS systems send fractional kg (e.g. "1.250").
+            item_quantity=float(payload.get("itemQuantity", 0) or 0),
             item_unit_price=float(payload.get("itemUnitPrice", 0.0) or 0.0),
             total_amount=float(payload.get("totalAmount", 0.0) or 0.0),
             scan_attribute=payload.get("scanAttribute", "None"),

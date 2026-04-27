@@ -6,6 +6,21 @@ from backend.config import build_seller_window_id, normalize_terminal
 from backend.models import PaymentLine, SaleLine, TotalLine, TransactionEvent, TransactionSession, utc_now
 
 
+def _truthy(value) -> bool:
+    """Strict truthy parse: accepts real bools, 0/1, and the strings true/false/yes/no/on/off (case-insensitive).
+
+    bool("false") returns True in Python — that flipped employeePurchase /
+    isPreviousTransaction whenever Nukkad's stringified-JSON body landed.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
 class TransactionAssembler:
     def __init__(self, timeout_seconds: int = 1800):
         self.sessions: dict[str, TransactionSession] = {}
@@ -28,13 +43,13 @@ class TransactionAssembler:
             cashier_id=payload.get("cashier", ""),
             debitor=payload.get("debitor", ""),
             transaction_type=payload.get("transactionType", "CompletedNormally"),
-            employee_purchase=bool(payload.get("employeePurchase", False)),
+            employee_purchase=_truthy(payload.get("employeePurchase", False)),
             outside_opening_hours=payload.get("outsideOpeningHours", "InsideOpeningHours"),
             started_at=payload.get("transactionTimeStamp"),
             last_event_at=payload.get("transactionTimeStamp"),
             source="push_assembled",
             status="open",
-            is_previous_transaction=bool(payload.get("isPreviousTransaction", False)),
+            is_previous_transaction=_truthy(payload.get("isPreviousTransaction", False)),
             linked_transaction_id=payload.get("transactionNumberLinkedTo", ""),
             transaction_number=payload.get("transactionNumber", ""),
         )
