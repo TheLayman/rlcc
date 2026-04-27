@@ -642,26 +642,27 @@ async def health():
     }
 
 
-@app.get("/api/transactions")
-async def list_transactions():
+def _build_transactions_response() -> dict:
     transactions = _sort_transactions(_load_transactions())
-    repaired: list[TransactionSession] = []
-    for txn in transactions:
-        if _needs_transaction_repair(txn):
-            txn = (await asyncio.to_thread(_repair_transaction_media, txn))[0]
-        repaired.append(txn)
-    transactions = repaired
+    transactions = [
+        _repair_transaction_media(txn)[0] if _needs_transaction_repair(txn) else txn
+        for txn in transactions
+    ]
     serialized = [serialize_transaction(txn, deps.config) for txn in transactions]
     bills_map = {txn.id: build_bill_data(txn) for txn in transactions}
     return {"transactions": serialized, "bills_map": bills_map, "count": len(serialized)}
 
 
-@app.get("/api/transactions/{txn_id}")
-async def get_transaction(txn_id: str):
+@app.get("/api/transactions")
+async def list_transactions():
+    return await asyncio.to_thread(_build_transactions_response)
+
+
+def _build_transaction_detail(txn_id: str) -> dict | None:
     txn = _find_transaction(txn_id)
     if not txn:
-        raise HTTPException(status_code=404, detail="Transaction not found")
-    txn, _ = await asyncio.to_thread(_repair_transaction_media, txn)
+        return None
+    txn, _ = _repair_transaction_media(txn)
     return {
         "transaction": serialize_transaction(txn, deps.config),
         "bill_data": build_bill_data(txn),
@@ -669,12 +670,27 @@ async def get_transaction(txn_id: str):
     }
 
 
-@app.get("/api/transactions/{txn_id}/timeline")
-async def get_timeline(txn_id: str):
+@app.get("/api/transactions/{txn_id}")
+async def get_transaction(txn_id: str):
+    detail = await asyncio.to_thread(_build_transaction_detail, txn_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return detail
+
+
+def _build_timeline_response(txn_id: str) -> list | None:
     txn = _find_transaction(txn_id)
     if not txn:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+        return None
     return build_timeline(txn)
+
+
+@app.get("/api/transactions/{txn_id}/timeline")
+async def get_timeline(txn_id: str):
+    timeline = await asyncio.to_thread(_build_timeline_response, txn_id)
+    if timeline is None:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return timeline
 
 
 _RANGE_CHUNK_SIZE = 1024 * 1024
@@ -736,42 +752,58 @@ def _range_video_response(file_path: str, request: Request, download_name: str) 
     return StreamingResponse(iter_chunks(), status_code=206, media_type="video/mp4", headers=headers)
 
 
+def _resolve_transaction_clip(txn_id: str) -> str:
+    txn = _find_transaction(txn_id)
+    if not txn:
+        return ""
+    txn, _ = _repair_transaction_media(txn)
+    if not txn.snippet_path or not _clip_path_exists(txn.snippet_path):
+        return ""
+    return txn.snippet_path
+
+
 @app.get("/api/transactions/{txn_id}/video")
 async def get_transaction_video(txn_id: str, request: Request):
-    txn = _find_transaction(txn_id)
-    if txn:
-        txn, _ = await asyncio.to_thread(_repair_transaction_media, txn)
-    if not txn or not txn.snippet_path or not _clip_path_exists(txn.snippet_path):
+    snippet_path = await asyncio.to_thread(_resolve_transaction_clip, txn_id)
+    if not snippet_path:
         raise HTTPException(status_code=404, detail="Transaction clip not found")
-    return _range_video_response(txn.snippet_path, request, f"{txn_id}.mp4")
+    return _range_video_response(snippet_path, request, f"{txn_id}.mp4")
 
 
-@app.get("/api/alerts")
-async def list_alerts():
+def _build_alerts_response() -> list[dict]:
     alerts = _sort_alerts(_load_alerts())
     return [_serialize_alert(alert) for alert in alerts]
 
 
-@app.get("/api/alerts/{alert_id}/video")
-async def get_alert_video(alert_id: str, request: Request):
+@app.get("/api/alerts")
+async def list_alerts():
+    return await asyncio.to_thread(_build_alerts_response)
+
+
+def _resolve_alert_clip(alert_id: str) -> tuple[str, str]:
+    """Returns (clip_path, download_name) or ("", "") if no clip."""
     alert = _find_alert(alert_id)
     if not alert:
-        raise HTTPException(status_code=404, detail="Alert clip not found")
-
+        return "", ""
     clip_path = alert.snippet_path
     download_name = f"{alert_id}.mp4"
-
     if (not clip_path or not _clip_path_exists(clip_path)) and alert.transaction_id:
         txn = _find_transaction(alert.transaction_id)
         if txn:
-            txn, _ = await asyncio.to_thread(_repair_transaction_media, txn)
-        if txn and txn.snippet_path and _clip_path_exists(txn.snippet_path):
-            clip_path = txn.snippet_path
-            download_name = f"{txn.id}.mp4"
-
+            txn, _ = _repair_transaction_media(txn)
+            if txn.snippet_path and _clip_path_exists(txn.snippet_path):
+                clip_path = txn.snippet_path
+                download_name = f"{txn.id}.mp4"
     if not clip_path or not _clip_path_exists(clip_path):
-        raise HTTPException(status_code=404, detail="Alert clip not found")
+        return "", ""
+    return clip_path, download_name
 
+
+@app.get("/api/alerts/{alert_id}/video")
+async def get_alert_video(alert_id: str, request: Request):
+    clip_path, download_name = await asyncio.to_thread(_resolve_alert_clip, alert_id)
+    if not clip_path:
+        raise HTTPException(status_code=404, detail="Alert clip not found")
     return _range_video_response(clip_path, request, download_name)
 
 
