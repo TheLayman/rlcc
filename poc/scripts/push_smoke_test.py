@@ -243,23 +243,30 @@ class Runner:
         now = datetime.now(IST).replace(microsecond=0)
         ts = now.isoformat()
         bill = self.bill_number
+        # Nukkad ties every event in a transaction together via
+        # `transactionSessionId`. The assembler's begin() requires it as a
+        # hard key, so all four events must share the same value.
+        session_id = f"SMOKE-SESSION-{bill}"
+
+        common = {
+            "storeIdentifier": self.store,
+            "posTerminalNo": self.terminal,
+            "transactionSessionId": session_id,
+            "transactionNumber": bill,
+            "billNumber": bill,
+        }
 
         events = [
             {
+                **common,
                 "event": "BeginTransactionWithTillLookup",
-                "storeIdentifier": self.store,
-                "posTerminalNo": self.terminal,
                 "cashier": "smoke-test",
-                "billNumber": bill,
-                "transactionNumber": bill,
-                "ts": ts,
+                "transactionTimeStamp": ts,
+                "transactionType": "CompletedNormally",
             },
             {
+                **common,
                 "event": "AddTransactionSaleLine",
-                "storeIdentifier": self.store,
-                "posTerminalNo": self.terminal,
-                "billNumber": bill,
-                "transactionNumber": bill,
                 "lineNumber": 1,
                 "itemId": "SMOKE-ITEM",
                 "itemDescription": "Smoke Test Donut",
@@ -269,27 +276,21 @@ class Runner:
                 "scanAttribute": "None",
                 "itemAttribute": "None",
                 "discountType": "NoLineDiscount",
-                "ts": ts,
+                "lineTimeStamp": ts,
             },
             {
+                **common,
                 "event": "AddTransactionPaymentLine",
-                "storeIdentifier": self.store,
-                "posTerminalNo": self.terminal,
-                "billNumber": bill,
-                "transactionNumber": bill,
                 "lineNumber": 1,
                 "lineAttribute": "Cash",
                 "paymentDescription": "Cash",
                 "amount": 99.0,
-                "ts": ts,
+                "lineTimeStamp": ts,
             },
             {
+                **common,
                 "event": "CommitTransaction",
-                "storeIdentifier": self.store,
-                "posTerminalNo": self.terminal,
-                "billNumber": bill,
-                "transactionNumber": bill,
-                "ts": ts,
+                "transactionTimeStamp": ts,
             },
         ]
 
