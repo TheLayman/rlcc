@@ -43,7 +43,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 SALES_API_ENDPOINTS = {
     "F&B":    "https://integrations.fnb.posifly.in/v1/sales/getSalesWithItems",
-    "Retail": "https://openapis.nukkadshops.com/v1/sales/getSalesWithItems",
+    "Retail": "https://integrations.retail.posifly.in/v1/sales/getSalesWithItems",
 }
 
 
