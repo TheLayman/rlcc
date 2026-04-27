@@ -42,10 +42,14 @@ returns a date-filtered view of those persisted transactions.
 To smoke-test all nine endpoints after deploy:
 
 ```bash
-python3 poc/scripts/verify_push_endpoints.py \
-    --base-url http://localhost:8001 \
-    --auth-key "$NUKKAD_PUSH_AUTH_KEY"
+# all 17 scenarios
+python3 poc/scripts/verify_push_endpoints.py
+
+# subset (see --list for keys)
+python3 poc/scripts/verify_push_endpoints.py --only happy_path,get_till_unknown
 ```
+
+Defaults: `BASE_URL=http://localhost:8001`, auth key auto-loaded from `poc/.env`. `--list` prints all available scenarios. The runner exits non-zero with the count of failed scenarios.
 
 ## Required Files
 

@@ -27,10 +27,27 @@ The payload's `event` field must match the route, otherwise the request is rejec
 | `AddTransactionEvent`                  | `POST /v1/rlcc/add-transaction-event` | Lifecycle event (Suspended, Resumed, Cancelled) |
 | `AddTransactionTotalLine`              | `POST /v1/rlcc/add-transaction-total-line` | Add total line (SubTotal, VAT, TotalDiscount, TotalAmountToBePaid, TotalEmployeeDiscount) |
 | `CommitTransaction`                    | `POST /v1/rlcc/commit-transaction` | Seal the transaction, trigger correlation + fraud rules |
-| `BillReprint`                          | `POST /v1/rlcc/bill-reprint` | Immediate alert, no assembly needed |
-| `GetTill`                              | `POST /v1/rlcc/get-till` | Till lookup (not a transaction event) |
+| `BillReprint`                          | `POST /v1/rlcc/bill-reprint` | Immediate alert, no assembly needed. Reads `billNumber` (spec key, falls back to `transactionNumber`) and accepts `transactionTimestamp` as Long-ms or ISO 8601. |
+| `GetTill`                              | `POST /v1/rlcc/get-till` | Resolves the till by matching `storeIdentifier` + `tillDescription` against `camera_mapping.json`. Returns spec envelope `{Till}` on hit, HTTP 400 + `ErrorCode 11` on miss. |
 
 All events for a transaction share a `transactionSessionId`. The receiver routes each event to the Transaction Assembler by that ID. Field-level schemas are in [INTEGRATION.md](INTEGRATION.md) §1 (mirrored from `RLCC API Documentation.pdf` §4).
+
+### Response envelopes
+
+Two endpoints return spec-shaped envelopes; the rest return a generic acknowledgement:
+
+- `BeginTransactionWithTillLookup` → `{status:200, message:"Success", data:{ErrorCode:"-1", Succeeded:"true", TransactionSessionId:"<id>"}}`. The session id echoes Nukkad's input so their client can thread subsequent calls.
+- `GetTill` → on hit, `{… data:{ErrorCode:"-1", Succeeded:"true", Till:"<till>"}}`; on miss (no camera in `camera_mapping.json` matches `storeIdentifier` + `tillDescription`), HTTP 400 + `{… data:{ErrorCode:"11", ErrorDescription:"No Till found with the specified Branch and Description.", Succeeded:"false"}}`.
+- All seven other endpoints → `{status:200, message:"Success", event:"<EventName>"}`.
+
+### Input parsing safety nets
+
+The receiver tolerates a few real-world POS quirks not strictly in the spec:
+
+- Boolean fields (`employeePurchase`, `isPreviousTransaction`) are parsed via a strict `_truthy()` helper that handles real bools, 0/1, and the strings `true`/`false`/`yes`/`no`/`on`/`off`. Python's `bool("false")` is True, which would silently flip a fraud-relevant flag whenever the body arrived stringified.
+- `itemQuantity` is parsed as `float` (not `int` per spec) so weighed items like `1.250` kg are accepted instead of triggering a `ValueError`.
+- `BillReprint.transactionTimestamp` is parsed via `_parse_ts_or_ms()`, which accepts Long-ms (per spec), numeric strings, and ISO 8601 strings — and tolerates the alternate casing `transactionTimeStamp`.
+- `BillReprint` reads `billNumber` first, `transactionNumber` as fallback. We'd like to drop the fallback once Nukkad confirms the canonical key (see [INTEGRATION.md](INTEGRATION.md) §1 "what we need").
 
 ---
 

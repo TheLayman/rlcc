@@ -46,9 +46,18 @@ Section numbers above match `RLCC API Documentation.pdf` (v0.1, 25-Mar-25). Fiel
 Standalone events (not part of the normal flow):
 - `AddTransactionEvent` — lifecycle: suspended, resumed, cancelled
 - `BillReprint` — standalone, triggers alert immediately
-- `GetTill` — till lookup, returns till number; no transaction state change
+- `GetTill` — till lookup, resolved against `camera_mapping.json`; returns till number on hit, `ErrorCode 11` on miss
 
 All transactional events are correlated to the same session via `transactionSessionId` (returned by `BeginTransactionWithTillLookup`).
+
+### Response envelopes
+
+Two endpoints return the spec-shaped envelope in `data`:
+
+- **`BeginTransactionWithTillLookup`** → `{status, message, data: {ErrorCode, Succeeded, TransactionSessionId}}`. The `TransactionSessionId` echoes the value Nukkad sent so it can thread subsequent calls.
+- **`GetTill`** → on hit, `{status:200, message:"Success", data:{ErrorCode:"-1", Succeeded:"true", Till:"<till>"}}`; on miss, HTTP 400 with `{message:"Failure", data:{ErrorCode:"11", ErrorDescription:"No Till found with the specified Branch and Description.", Succeeded:"false"}}`.
+
+The other seven endpoints return the lighter `{status:200, message:"Success", event:"<EventName>"}` envelope. Nukkad's POS-side client should treat any 2xx as accepted; the body shape is informational.
 
 ### 4.1  BeginTransactionWithTillLookup
 
@@ -140,7 +149,7 @@ Success response: `{"status": 200, "message": "Success", "data": {"ErrorCode": "
 | `scanAttribute` | string (enum) | Yes | Scan method, see enum §6.6 (`None`, `Auto`, `ModifiedUnitPrice`, `ManuallyEntered`). |
 | `itemID` | string | No | Unique item id. |
 | `itemDescription` | string | Yes | Item name. |
-| `itemQuantity` | integer | Yes | Quantity. |
+| `itemQuantity` | integer | Yes | Quantity. *Receiver accepts decimals (e.g. `1.250` kg) — the spec's `integer` is too narrow for weighed items.* |
 | `itemUnitMeasure` | string | No | Unit of measure (e.g. `kg`, `pcs`). |
 | `itemUnitPrice` | decimal | Yes | Unit price. |
 | `discountType` | string (enum) | Yes | Discount type, see enum §6.7. |
@@ -177,7 +186,7 @@ Same shape as 4.4 but the `*LinkedTo` fields are explicitly marked optional, and
 | `scanAttribute` | string (enum) | Yes | See enum §6.6. |
 | `itemID` | string | No | Unique item id. |
 | `itemDescription` | string | Yes | Item name. |
-| `itemQuantity` | integer | Yes | Quantity. |
+| `itemQuantity` | integer | Yes | Quantity. *Receiver accepts decimals (e.g. `1.250` kg).* |
 | `itemUnitMeasure` | string | No | Unit of measure. |
 | `itemUnitPrice` | decimal | Yes | Unit price. |
 | `discountType` | string (enum) | Yes | See enum §6.7. |
@@ -228,7 +237,7 @@ Success collapses the session into a finalized transaction in our store and trig
 
 `POST /v1/rlcc/get-till`
 
-A till-lookup RPC. We acknowledge it and broadcast the raw event but do not assemble transaction state from it.
+A till-lookup RPC. The receiver matches `storeIdentifier` + `tillDescription` against `camera_mapping.json` (comparing `tillDescription` to each camera's `display_pos_label` or `pos_terminal_no`) and returns the matching POS terminal as the till number. `branch` is informational on our side — the strong key is `storeIdentifier`.
 
 | Key | Type | Required | Description |
 |---|---|---|---|
@@ -239,7 +248,13 @@ A till-lookup RPC. We acknowledge it and broadcast the raw event but do not asse
 | `branch` | string | Yes | Branch / store name. |
 | `tillDescription` | string | Yes | Till description (e.g. `"POS1"`). |
 
-Success response: `{"status": 200, "message": "Success", "data": {"ErrorCode": "-1", "Succeeded": "true", "Till": "<till-number>"}}`. Error case (till not configured) returns HTTP 400 with `ErrorCode: "11"`.
+Success response (till resolved):
+`{"status": 200, "message": "Success", "data": {"ErrorCode": "-1", "Succeeded": "true", "Till": "<till-number>"}}`
+
+Failure response (no matching camera entry) — HTTP 400:
+`{"status": 400, "message": "Failure", "data": {"ErrorCode": "11", "ErrorDescription": "No Till found with the specified Branch and Description.", "Succeeded": "false"}}`
+
+If `GetTill` returns 400 in the field, check that the store's `camera_mapping.json` entry has a camera whose `display_pos_label` or `pos_terminal_no` matches the `tillDescription` Nukkad is sending.
 
 ### 4.9  BillReprint
 
@@ -255,8 +270,8 @@ Standalone notification — fires a fraud alert immediately.
 | `posTerminalNo` | string | Yes | POS terminal id. |
 | `branch` | string | Yes | Branch / store name. |
 | `tillDescription` | string | Yes | Till description used. |
-| `transactionTimestamp` | long | Yes | Milliseconds since epoch. |
-| `billNumber` | string | Yes | Unique bill number being reprinted. |
+| `transactionTimestamp` | long | Yes | Milliseconds since epoch. *Receiver also accepts ISO 8601 strings and the alternate casing `transactionTimeStamp` for safety.* |
+| `billNumber` | string | Yes | Unique bill number being reprinted. *Receiver also reads `transactionNumber` as a fallback if `billNumber` is missing — let us know which key your client actually sends so we can drop the fallback.* |
 | `cashier` | string | Yes | Cashier id handling the reprint. |
 
 ### Error envelope
@@ -279,6 +294,8 @@ Common cases: missing required field (`"<field>" is required`), wrong type (`"<f
 | 3 | Confirm `storeIdentifier` values — CIN codes (`NDCIN1223`) or store names (`"Asha"`)? | Pending | Affects store mapping |
 | 4 | Confirm retry/queue policy if our endpoint is down | Pending | Determines whether we need our own ingest queue |
 | 5 | Confirm timezone of `transactionTimeStamp` / `lineTimeStamp` (UTC vs IST) | Pending | Backend converts to UTC; mis-tagged input drifts the timeline |
+| 6 | Confirm casing for BillReprint timestamp (`transactionTimestamp` per the §4.9 table vs `transactionTimeStamp` per the §4.1 prose) and confirm whether the bill identifier is `billNumber` (per §4.9) or `transactionNumber` | Pending | Receiver tolerates both today; we'd like to remove the fallbacks once confirmed |
+| 7 | Confirm whether boolean flags (`employeePurchase`, `isPreviousTransaction`, `isForTillLookup`, `printable`) arrive as JSON booleans or stringified `"true"`/`"false"` | Pending | Receiver parses both; flagging so we can tighten validation later |
 
 ### Key enums we consume
 
@@ -305,12 +322,19 @@ Mirrors §6 of the PDF.
 After Nukkad is wired up to our endpoints, on the server:
 
 ```bash
-python3 poc/scripts/verify_push_endpoints.py \
-    --base-url http://localhost:8001 \
-    --auth-key "$NUKKAD_PUSH_AUTH_KEY"
+# all 17 scenarios
+python3 poc/scripts/verify_push_endpoints.py
+
+# pick a subset
+python3 poc/scripts/verify_push_endpoints.py --only happy_path,get_till_unknown,bill_reprint
+
+# list available scenarios
+python3 poc/scripts/verify_push_endpoints.py --list
 ```
 
-Sends a synthetic `BeginTransactionWithTillLookup → … → CommitTransaction` flow plus standalone `GetTill` and `BillReprint` calls. Exits non-zero if any of the 9 returns ≠ 200.
+Defaults: `BASE_URL=http://localhost:8001`, auth key auto-loaded from `poc/.env` (`NUKKAD_PUSH_AUTH_KEY`).
+
+Beyond the basic happy-path flow, the 17 scenarios exercise: response-envelope shape on `BeginTransactionWithTillLookup`, fractional `itemQuantity` (1.250 kg), stringified-bool flags, the `GetTill` failure envelope (`ErrorCode 11`), `BillReprint` with `billNumber` + Long-ms timestamp, duplicate-event dedupe, commit-without-Begin, sale-line-without-Begin, event/route mismatch, malformed JSON, stringified body, and auth failures. Exit code is the count of failed scenarios.
 
 ## 2. XProtect WebRTC Integration
 
