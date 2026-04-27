@@ -14,7 +14,9 @@ class TransactionAssembler:
         self._session_times: dict[str, float] = {}
 
     def begin(self, payload: dict):
-        session_id = payload["transactionSessionId"]
+        session_id = payload.get("transactionSessionId") or ""
+        if not session_id:
+            raise ValueError("missing transactionSessionId")
         store_id = payload.get("storeIdentifier", "")
         pos_terminal_no = payload.get("posTerminalNo", "")
         txn = TransactionSession(

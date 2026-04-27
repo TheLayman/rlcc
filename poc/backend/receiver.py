@@ -158,70 +158,76 @@ async def receive_event(request: Request):
     if store_id:
         deps.fraud_engine.record_nukkad_event(store_id)
 
-    if event_type == "BeginTransactionWithTillLookup":
-        deps.assembler.begin(payload)
+    try:
+        if event_type == "BeginTransactionWithTillLookup":
+            deps.assembler.begin(payload)
 
-    elif event_type in {"AddTransactionSaleLine", "AddTransactionSaleLineWithTillLookup"}:
-        deps.assembler.add_sale_line(payload)
+        elif event_type in {"AddTransactionSaleLine", "AddTransactionSaleLineWithTillLookup"}:
+            deps.assembler.add_sale_line(payload)
 
-    elif event_type == "AddTransactionPaymentLine":
-        deps.assembler.add_payment_line(payload)
+        elif event_type == "AddTransactionPaymentLine":
+            deps.assembler.add_payment_line(payload)
 
-    elif event_type == "AddTransactionTotalLine":
-        deps.assembler.add_total_line(payload)
+        elif event_type == "AddTransactionTotalLine":
+            deps.assembler.add_total_line(payload)
 
-    elif event_type == "AddTransactionEvent":
-        deps.assembler.add_event(payload)
+        elif event_type == "AddTransactionEvent":
+            deps.assembler.add_event(payload)
 
-    elif event_type == "GetTill":
-        await _broadcast_raw_pos()
-        return {"status": 200, "message": "GetTill acknowledged"}
+        elif event_type == "GetTill":
+            await _broadcast_raw_pos()
+            return {"status": 200, "message": "GetTill acknowledged"}
 
-    elif event_type == "CommitTransaction":
-        txn = deps.assembler.commit(payload)
-        if txn:
-            txn = _hydrate_transaction(txn)
-            txn = correlate(txn, deps.cv_consumer, deps.config)
-            txn.snippet_path = _extract_transaction_clip(txn)
+        elif event_type == "CommitTransaction":
+            txn = deps.assembler.commit(payload)
+            if txn:
+                txn = _hydrate_transaction(txn)
+                txn = correlate(txn, deps.cv_consumer, deps.config)
+                txn.snippet_path = _extract_transaction_clip(txn)
 
-            alerts = deps.fraud_engine.evaluate(txn)
-            for alert in alerts:
-                alert.store_name = alert.store_name or txn.store_name
-                alert.pos_terminal_no = alert.pos_terminal_no or txn.pos_terminal_no
-                alert.display_pos_label = alert.display_pos_label or txn.display_pos_label
-                alert.camera_id = alert.camera_id or txn.camera_id
-                alert.device_id = alert.device_id or txn.device_id
-                alert.snippet_path = alert.snippet_path or txn.snippet_path
-
-            if _persist_committed_transaction(txn, alerts):
-                await deps.ws_manager.broadcast("NEW_TRANSACTION", serialize_transaction(txn, deps.config))
+                alerts = deps.fraud_engine.evaluate(txn)
                 for alert in alerts:
-                    await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
+                    alert.store_name = alert.store_name or txn.store_name
+                    alert.pos_terminal_no = alert.pos_terminal_no or txn.pos_terminal_no
+                    alert.display_pos_label = alert.display_pos_label or txn.display_pos_label
+                    alert.camera_id = alert.camera_id or txn.camera_id
+                    alert.device_id = alert.device_id or txn.device_id
+                    alert.snippet_path = alert.snippet_path or txn.snippet_path
 
-    elif event_type == "BillReprint":
-        event_ts = _parse_ts(payload.get("transactionTimeStamp"))
-        clip_path, camera_id = _extract_event_clip(
-            clip_id=f"bill-reprint-{payload.get('transactionNumber', 'unknown')}",
-            store_id=store_id,
-            pos_terminal_no=pos_terminal_no,
-            at=event_ts,
+                if _persist_committed_transaction(txn, alerts):
+                    await deps.ws_manager.broadcast("NEW_TRANSACTION", serialize_transaction(txn, deps.config))
+                    for alert in alerts:
+                        await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
+
+        elif event_type == "BillReprint":
+            event_ts = _parse_ts(payload.get("transactionTimeStamp"))
+            clip_path, camera_id = _extract_event_clip(
+                clip_id=f"bill-reprint-{payload.get('transactionNumber', 'unknown')}",
+                store_id=store_id,
+                pos_terminal_no=pos_terminal_no,
+                at=event_ts,
+            )
+            alert = Alert(
+                transaction_id=payload.get("transactionNumber", ""),
+                store_id=store_id,
+                store_name=deps.config.get_store_name(store_id),
+                pos_terminal_no=pos_terminal_no,
+                display_pos_label=pos_terminal_no,
+                cashier_id=cashier_id,
+                risk_level="Medium",
+                triggered_rules=["13_bill_reprint"],
+                timestamp=event_ts or datetime.now(timezone.utc),
+                camera_id=camera_id,
+                snippet_path=clip_path,
+                source="bill_reprint",
+            )
+            deps.storage.append("alerts", alert.model_dump())
+            await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"message": f"invalid {event_type} payload: {exc}"},
         )
-        alert = Alert(
-            transaction_id=payload.get("transactionNumber", ""),
-            store_id=store_id,
-            store_name=deps.config.get_store_name(store_id),
-            pos_terminal_no=pos_terminal_no,
-            display_pos_label=pos_terminal_no,
-            cashier_id=cashier_id,
-            risk_level="Medium",
-            triggered_rules=["13_bill_reprint"],
-            timestamp=event_ts or datetime.now(timezone.utc),
-            camera_id=camera_id,
-            snippet_path=clip_path,
-            source="bill_reprint",
-        )
-        deps.storage.append("alerts", alert.model_dump())
-        await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
 
     await _broadcast_raw_pos()
     return {"status": 200, "message": "Success", "event": event_type}
