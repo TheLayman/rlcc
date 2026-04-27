@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -183,7 +184,7 @@ async def receive_event(request: Request):
             if txn:
                 txn = _hydrate_transaction(txn)
                 txn = correlate(txn, deps.cv_consumer, deps.config)
-                txn.snippet_path = _extract_transaction_clip(txn)
+                txn.snippet_path = await asyncio.to_thread(_extract_transaction_clip, txn)
 
                 alerts = deps.fraud_engine.evaluate(txn)
                 for alert in alerts:
@@ -201,7 +202,8 @@ async def receive_event(request: Request):
 
         elif event_type == "BillReprint":
             event_ts = _parse_ts(payload.get("transactionTimeStamp"))
-            clip_path, camera_id = _extract_event_clip(
+            clip_path, camera_id = await asyncio.to_thread(
+                _extract_event_clip,
                 clip_id=f"bill-reprint-{payload.get('transactionNumber', 'unknown')}",
                 store_id=store_id,
                 pos_terminal_no=pos_terminal_no,

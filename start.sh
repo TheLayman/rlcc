@@ -87,8 +87,12 @@ stop_all() {
   stop_port "$CV_PORT"
   stop_port "$BACKEND_PORT"
   stop_port "$DASHBOARD_PORT"
+  # ffmpeg recorders are spawned by cv.main and survive port-based kills.
+  # Without this, every restart leaves orphan recorders that race-write to
+  # the same buffer files, producing corrupt mp4s.
+  pkill -9 -f "ffmpeg.*data/buffer/cam-" 2>/dev/null || true
   stop_redis
-  echo "Ports cleared: $CV_PORT, $BACKEND_PORT, $DASHBOARD_PORT"
+  echo "Ports cleared: $CV_PORT, $BACKEND_PORT, $DASHBOARD_PORT (ffmpeg recorders cleaned)"
 }
 
 if [ "${1:-}" = "stop" ]; then

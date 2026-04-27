@@ -289,12 +289,12 @@ async def _ingest_polled_bills(bills: list[dict], *, mode: str) -> dict:
 
         existing = existing_bill_numbers.get(txn.bill_number)
         if existing is not None:
-            repaired, _ = _repair_transaction_media(existing)
+            repaired, _ = await asyncio.to_thread(_repair_transaction_media, existing)
             existing_bill_numbers[txn.bill_number] = repaired
             continue
 
         txn = correlate(txn, deps.cv_consumer, deps.config)
-        txn.snippet_path = _extract_transaction_clip(txn)
+        txn.snippet_path = await asyncio.to_thread(_extract_transaction_clip, txn)
 
         alerts = deps.fraud_engine.evaluate(txn)
         for alert in alerts:
@@ -408,7 +408,8 @@ async def expiry_checker():
             anchor = _parse_dt(txn.last_event_at) or _parse_dt(txn.started_at)
             if deps.video_manager and txn.camera_id and anchor:
                 try:
-                    snippet = deps.video_manager.extract_clip(
+                    snippet = await asyncio.to_thread(
+                        deps.video_manager.extract_clip,
                         camera_id=txn.camera_id,
                         clip_id=f"abandoned-{txn.id}",
                         start_ts=anchor - timedelta(seconds=30),
@@ -502,7 +503,7 @@ async def missing_pos_checker():
             if dwell_seconds < _missing_pos_seconds():
                 continue
 
-            alert = _build_missing_pos_alert(state, now)
+            alert = await asyncio.to_thread(_build_missing_pos_alert, state, now)
             if not alert:
                 continue
 
@@ -644,10 +645,12 @@ async def health():
 @app.get("/api/transactions")
 async def list_transactions():
     transactions = _sort_transactions(_load_transactions())
-    transactions = [
-        _repair_transaction_media(txn)[0] if _needs_transaction_repair(txn) else txn
-        for txn in transactions
-    ]
+    repaired: list[TransactionSession] = []
+    for txn in transactions:
+        if _needs_transaction_repair(txn):
+            txn = (await asyncio.to_thread(_repair_transaction_media, txn))[0]
+        repaired.append(txn)
+    transactions = repaired
     serialized = [serialize_transaction(txn, deps.config) for txn in transactions]
     bills_map = {txn.id: build_bill_data(txn) for txn in transactions}
     return {"transactions": serialized, "bills_map": bills_map, "count": len(serialized)}
@@ -658,7 +661,7 @@ async def get_transaction(txn_id: str):
     txn = _find_transaction(txn_id)
     if not txn:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    txn, _ = _repair_transaction_media(txn)
+    txn, _ = await asyncio.to_thread(_repair_transaction_media, txn)
     return {
         "transaction": serialize_transaction(txn, deps.config),
         "bill_data": build_bill_data(txn),
@@ -737,7 +740,7 @@ def _range_video_response(file_path: str, request: Request, download_name: str) 
 async def get_transaction_video(txn_id: str, request: Request):
     txn = _find_transaction(txn_id)
     if txn:
-        txn, _ = _repair_transaction_media(txn)
+        txn, _ = await asyncio.to_thread(_repair_transaction_media, txn)
     if not txn or not txn.snippet_path or not _clip_path_exists(txn.snippet_path):
         raise HTTPException(status_code=404, detail="Transaction clip not found")
     return _range_video_response(txn.snippet_path, request, f"{txn_id}.mp4")
@@ -761,7 +764,7 @@ async def get_alert_video(alert_id: str, request: Request):
     if (not clip_path or not _clip_path_exists(clip_path)) and alert.transaction_id:
         txn = _find_transaction(alert.transaction_id)
         if txn:
-            txn, _ = _repair_transaction_media(txn)
+            txn, _ = await asyncio.to_thread(_repair_transaction_media, txn)
         if txn and txn.snippet_path and _clip_path_exists(txn.snippet_path):
             clip_path = txn.snippet_path
             download_name = f"{txn.id}.mp4"
