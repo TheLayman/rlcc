@@ -175,6 +175,7 @@ def serialize_alert(
         "clip_url": clip_url_for_alert(alert),
         "clip_status": clip_status,
         "clip_reason": clip_reason,
+        "cv_confidence": getattr(alert, "cv_confidence", "") or "",
         "remarks": alert.remarks or "",
         "source": alert.source,
     }

@@ -3,7 +3,7 @@ import { format } from 'date-fns';
 import { AlertTriangle, CheckCircle, Clock, Search as SearchIcon, Video } from 'lucide-react';
 import { toast } from 'sonner';
 
-import { Alert, ClipStatus, Transaction } from '@/lib/mock-data';
+import { Alert, ClipStatus, CVConfidence, Transaction } from '@/lib/mock-data';
 import { Badge } from '@/app/components/ui/badge';
 import { Button } from '@/app/components/ui/button';
 import { Card } from '@/app/components/ui/card';
@@ -32,6 +32,19 @@ function clipStatusLabel(status: ClipStatus): string {
     case 'retention_expired': return 'Retention expired';
     case 'not_recorded': return 'Not recorded';
     default: return 'Clip unavailable';
+  }
+}
+
+function cvConfidenceBadgeClass(level: CVConfidence): string {
+  switch (level) {
+    case 'VERY_HIGH':
+      return 'bg-red-100 text-red-800 border-red-300';
+    case 'HIGH':
+      return 'bg-red-50 text-red-700 border-red-200';
+    case 'MEDIUM':
+      return 'bg-amber-50 text-amber-700 border-amber-200';
+    default:
+      return 'bg-gray-50 text-gray-600 border-gray-200';
   }
 }
 
@@ -204,6 +217,14 @@ export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransacti
                           <Badge className={`${alert.risk_level === 'High' ? 'bg-red-50 text-red-700 border-red-200' : alert.risk_level === 'Medium' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-green-50 text-green-700 border-green-200'}`}>
                             {alert.risk_level}
                           </Badge>
+                          {alert.cv_confidence && alert.cv_confidence !== '' && (
+                            <Badge
+                              className={cvConfidenceBadgeClass(alert.cv_confidence as CVConfidence)}
+                              title="CV confidence ladder (Phase 2)"
+                            >
+                              CV {alert.cv_confidence.replace('_', ' ')}
+                            </Badge>
+                          )}
                         </div>
                         <div className="text-sm text-gray-600">
                           Store: {alert.shop_name || alert.shop_id} | Cashier: {alert.cashier_name}

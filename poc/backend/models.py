@@ -169,6 +169,7 @@ class Alert(BaseModel):
     device_id: str = ""
     snippet_path: str = ""
     source: str = "rule"
+    cv_confidence: str = ""
 
     @property
     def pos_zone(self) -> str:

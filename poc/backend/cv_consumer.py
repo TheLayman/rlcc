@@ -218,6 +218,19 @@ class CVConsumer:
     def get_latest_activity(self) -> dict[str, dict]:
         return dict(self.latest_activity)
 
+    def get_activity_for(self, camera_id: str, pos_zone: str) -> dict | None:
+        """Most recent activity payload published for this camera+zone."""
+        if not camera_id:
+            return None
+        key = f"{camera_id}:{pos_zone}" if pos_zone else camera_id
+        return self.latest_activity.get(key)
+
+    def get_latest_signal(self, camera_id: str) -> dict | None:
+        """Most recent Phase-1 signal published for this camera."""
+        if not camera_id:
+            return None
+        return self.latest.get(camera_id)
+
     def get_health(self) -> dict:
         return {
             "redis_url": self.redis_url,

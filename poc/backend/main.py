@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 import backend.deps as deps
 from backend.assembler import TransactionAssembler
 from backend.config import Config, StoreEntry
+from backend.confidence import compute_missing_pos_confidence
 from backend.correlator import correlate
 from backend.cv_consumer import ActivityState, CVConsumer
 from backend.fraud import FraudEngine
@@ -312,6 +313,15 @@ def _build_missing_pos_alert(state: ActivityState, now: datetime) -> Alert | Non
     if not mapping:
         return None
     camera, _zone = mapping
+
+    verdict = compute_missing_pos_confidence(
+        started_at=state.started_at,
+        pos_zone=state.pos_zone,
+        latest_activity=deps.cv_consumer.get_activity_for(state.camera_id, state.pos_zone),
+        latest_signal=deps.cv_consumer.get_latest_signal(state.camera_id),
+        now=now,
+    )
+
     snippet = ""
     if deps.video_manager:
         snippet = deps.video_manager.extract_clip(
@@ -326,14 +336,16 @@ def _build_missing_pos_alert(state: ActivityState, now: datetime) -> Alert | Non
         store_name=deps.config.get_store_name(camera.store_id),
         pos_terminal_no=camera.pos_terminal_no,
         display_pos_label=camera.display_pos_label,
-        risk_level="High",
-        triggered_rules=["24_missing_pos"],
+        risk_level=verdict.risk_level,
+        triggered_rules=list(verdict.rule_ids),
         timestamp=state.last_seen,
         camera_id=state.camera_id,
         cv_window_start=state.started_at,
         cv_window_end=state.last_seen,
         snippet_path=snippet,
         source="cv_missing_pos",
+        cv_confidence=verdict.level,
+        remarks=verdict.reason,
     )
 
 

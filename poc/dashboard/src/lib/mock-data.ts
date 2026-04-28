@@ -87,6 +87,8 @@ export type ClipStatus =
   | 'not_recorded'
   | 'unknown';
 
+export type CVConfidence = 'LOW' | 'MEDIUM' | 'HIGH' | 'VERY_HIGH';
+
 export interface Alert {
   id: string;
   transaction_id: string;
@@ -102,6 +104,7 @@ export interface Alert {
   clip_url?: string | null;
   clip_status?: ClipStatus;
   clip_reason?: string;
+  cv_confidence?: CVConfidence | '';
   remarks?: string;
   source?: string;
 }
