@@ -16,6 +16,8 @@
   "activity_fps": 2,
   "cv_target_fps": 5,
   "snippet_low_disk_pct": 10.0,
+  "rtsp_reconnect_after_failures": 10,
+  "rtsp_reconnect_backoff_seconds": 5.0,
   "rules": {
     "1_high_discount": {"enabled": true},
     "2_refund_excess": {"enabled": true},

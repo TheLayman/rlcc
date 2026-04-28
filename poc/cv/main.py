@@ -89,6 +89,9 @@ class CameraState:
     activity_last_label: dict[str, str] = field(default_factory=dict)
     fps_samples: deque = field(default_factory=lambda: deque(maxlen=20))
     current_fps: float = 0.0
+    consecutive_read_failures: int = 0
+    last_reconnect_at: datetime | None = None
+    reconnect_count: int = 0
 
 
 class CVRuntime:
@@ -174,6 +177,9 @@ class CVRuntime:
                     "target_fps": target_fps,
                     "frame_count": state.frame_count,
                     "fps_starved": state.current_fps > 0 and state.current_fps < target_fps * 0.6,
+                    "reconnect_count": state.reconnect_count,
+                    "consecutive_read_failures": state.consecutive_read_failures,
+                    "last_reconnect_at": state.last_reconnect_at.isoformat() if state.last_reconnect_at else None,
                 }
                 for state in self.states.values()
             ]
@@ -186,6 +192,20 @@ class CVRuntime:
                 return next(iter(self.states.values()))
         raise HTTPException(status_code=404, detail="Camera not found")
 
+    def _open_capture(self, camera: CameraEntry):
+        """Open a fresh VideoCapture with a tiny buffer so reads always
+        return the latest frame (drops stale buffered frames during catchup)."""
+        if cv2 is None or not camera.rtsp_url:
+            return None
+        capture = cv2.VideoCapture(camera.rtsp_url)
+        if not capture.isOpened():
+            return None
+        try:
+            capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+        return capture
+
     def _camera_worker(self, camera_id: str):
         state = self.states[camera_id]
         camera = state.camera
@@ -196,14 +216,17 @@ class CVRuntime:
             state.last_error = "opencv-python-headless is not installed"
 
         if cv2 is not None and camera.rtsp_url:
-            capture = cv2.VideoCapture(camera.rtsp_url)
-            if capture.isOpened():
+            capture = self._open_capture(camera)
+            if capture is not None:
                 state.source_mode = "rtsp"
                 state.recorder = self._start_recorder(camera)
             else:
                 state.last_error = "Could not open RTSP stream"
         else:
             state.last_error = "RTSP URL not configured"
+
+        reconnect_threshold = max(int(self._rule("rtsp_reconnect_after_failures", 10)), 1)
+        reconnect_backoff_seconds = max(self._rule("rtsp_reconnect_backoff_seconds", 5.0), 0.5)
 
         while not self.stop_event.is_set():
             loop_started = time.monotonic()
@@ -215,12 +238,42 @@ class CVRuntime:
                 ok, raw = capture.read()
                 if ok and raw is not None:
                     frame = raw
+                    state.consecutive_read_failures = 0
                     if state.source_mode != "rtsp":
                         state.source_mode = "rtsp"
-                    if state.last_error in ("RTSP frame read failed", "Could not open RTSP stream"):
+                    if state.last_error in (
+                        "RTSP frame read failed",
+                        "Could not open RTSP stream",
+                        "RTSP stream lost — reconnecting",
+                    ):
                         state.last_error = None
                 else:
+                    state.consecutive_read_failures += 1
                     state.last_error = "RTSP frame read failed"
+            else:
+                state.consecutive_read_failures += 1
+
+            # After sustained read failures, drop the capture and reopen.
+            # Backoff prevents tight reconnect loops on permanently-dead cameras.
+            if (
+                camera.rtsp_url
+                and cv2 is not None
+                and state.consecutive_read_failures >= reconnect_threshold
+            ):
+                now_dt = datetime.now(timezone.utc)
+                last_attempt = state.last_reconnect_at
+                if last_attempt is None or (now_dt - last_attempt).total_seconds() >= reconnect_backoff_seconds:
+                    state.last_reconnect_at = now_dt
+                    state.reconnect_count += 1
+                    state.last_error = "RTSP stream lost — reconnecting"
+                    if capture is not None:
+                        try:
+                            capture.release()
+                        except Exception:
+                            pass
+                    capture = self._open_capture(camera)
+                    if capture is not None:
+                        state.consecutive_read_failures = 0
 
             if frame is None:
                 frame = self._placeholder_frame(camera, state.last_error or "Waiting for live stream")
