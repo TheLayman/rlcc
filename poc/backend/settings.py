@@ -26,6 +26,17 @@ class Settings:
     video_buffer_minutes: int
     video_retention_days: int
     torch_whl_index_url: str
+    dashboard_origins: list[str]
+
+
+def _parse_origins(raw: str) -> list[str]:
+    """Parse comma-separated DASHBOARD_ORIGINS env var.  Empty → ['*']
+    (permissive default keeps existing dev workflows working).  Any list
+    of explicit origins disables the wildcard."""
+    if not raw:
+        return ["*"]
+    parts = [item.strip() for item in raw.split(",") if item.strip()]
+    return parts or ["*"]
 
 
 def get_settings(env_path: Path | None = None) -> Settings:
@@ -41,4 +52,5 @@ def get_settings(env_path: Path | None = None) -> Settings:
         video_buffer_minutes=int(os.getenv("VIDEO_BUFFER_MINUTES", "10")),
         video_retention_days=int(os.getenv("VIDEO_RETENTION_DAYS", "7")),
         torch_whl_index_url=os.getenv("TORCH_WHL_INDEX_URL", "https://download.pytorch.org/whl/cu124"),
+        dashboard_origins=_parse_origins(os.getenv("DASHBOARD_ORIGINS", "")),
     )

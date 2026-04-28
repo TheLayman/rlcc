@@ -425,7 +425,7 @@ app = FastAPI(title="RLCC POC", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=deps.settings.dashboard_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
