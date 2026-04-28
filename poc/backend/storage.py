@@ -112,9 +112,10 @@ class Storage:
                 str(event.get("lineNumber", "")),
                 str(event.get("lineTimeStamp", "")),
                 str(event.get("transactionNumber", "")),
-                # BillReprint uses `billNumber` (spec key) — without this the dedup
-                # key collapses to identical strings for every reprint at the same
-                # store, since the other fields are all empty.
+                # Nukkad's CommitTransaction sends the bill as `posBillNum`;
+                # BillReprint uses `billNumber` (spec key). Include both so dedup
+                # doesn't collapse all reprints/commits at the same store.
+                str(event.get("posBillNum", "")),
                 str(event.get("billNumber", "")),
                 str(event.get("lineAttribute", "")),
             ]

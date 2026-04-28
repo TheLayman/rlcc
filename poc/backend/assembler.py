@@ -97,8 +97,12 @@ class TransactionAssembler:
         session = self.sessions.pop(session_id, None)
         self._session_times.pop(session_id, None)
         if session:
-            session.bill_number = payload.get("transactionNumber", "") or session.bill_number
-            session.transaction_number = payload.get("transactionNumber", "") or session.transaction_number
+            # Nukkad's live-prod payloads send the bill number as `posBillNum`
+            # (e.g. "AAAA2600000023"); spec §4.7 calls this `transactionNumber`.
+            # Read both so we capture the bill no matter which key is used.
+            bill_no = payload.get("posBillNum") or payload.get("transactionNumber") or ""
+            session.bill_number = bill_no or session.bill_number
+            session.transaction_number = bill_no or session.transaction_number
             session.status = "committed"
             session.committed_at = utc_now()
             session.last_event_at = payload.get("transactionTimeStamp") or session.last_event_at

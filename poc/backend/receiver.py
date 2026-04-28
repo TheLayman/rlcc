@@ -48,13 +48,23 @@ def _parse_payload(raw_body: bytes) -> tuple[dict | None, str | None]:
     return parsed, None
 
 
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
 def _parse_ts(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if dt.tzinfo is None:
+        # Nukkad's live-prod feed sends naive ISO 8601 (e.g. "2026-04-28T12:53:33").
+        # Per BACKEND_DESIGN §11 we assume IST (deployment timezone) and normalize
+        # to UTC so it compares cleanly with the tz-aware datetimes used elsewhere
+        # (CV signals, video buffer math).
+        dt = dt.replace(tzinfo=_IST).astimezone(timezone.utc)
+    return dt
 
 
 def _parse_ts_or_ms(value) -> datetime | None:

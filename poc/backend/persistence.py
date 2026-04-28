@@ -1,20 +1,27 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import backend.deps as deps
 from backend.models import Alert, TransactionSession
+
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def parse_dt(value) -> datetime | None:
     if value is None or value == "":
         return None
     if isinstance(value, datetime):
-        return value
+        return value if value.tzinfo else value.replace(tzinfo=_IST).astimezone(timezone.utc)
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         return None
+    if dt.tzinfo is None:
+        # Naive Nukkad timestamps — assume IST per BACKEND_DESIGN §11.
+        dt = dt.replace(tzinfo=_IST).astimezone(timezone.utc)
+    return dt
 
 
 def load_transactions() -> list[TransactionSession]:
