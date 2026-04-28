@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -116,13 +117,47 @@ class VideoManager:
         return duration is None or duration >= self._MIN_CLIP_DURATION_SECONDS
 
     def cleanup_old_snippets(self) -> int:
+        """Delete snippets older than retention_days.  Also reaps stale .tmp.mp4
+        files left over from failed extract_clip runs."""
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
         deleted = 0
-        for snippet in self.snippet_root.glob("*.mp4"):
-            modified = datetime.fromtimestamp(snippet.stat().st_mtime, tz=timezone.utc)
-            if modified < cutoff:
-                snippet.unlink(missing_ok=True)
-                deleted += 1
+        for pattern in ("*.mp4", "*.tmp.mp4"):
+            for snippet in self.snippet_root.glob(pattern):
+                try:
+                    modified = datetime.fromtimestamp(snippet.stat().st_mtime, tz=timezone.utc)
+                except OSError:
+                    continue
+                if modified < cutoff:
+                    snippet.unlink(missing_ok=True)
+                    deleted += 1
+        return deleted
+
+    def disk_free_pct(self) -> float:
+        """Free disk percentage on the snippets filesystem."""
+        try:
+            usage = shutil.disk_usage(self.snippet_root)
+        except OSError:
+            return 100.0
+        if usage.total <= 0:
+            return 100.0
+        return 100.0 * usage.free / usage.total
+
+    def emergency_purge(self, min_free_pct: float) -> int:
+        """Delete oldest snippets one-by-one until free disk >= min_free_pct.
+        Returns the number deleted.  Never touches buffer files (those are
+        managed by the CV recorder and pruned separately)."""
+        if self.disk_free_pct() >= min_free_pct:
+            return 0
+        candidates = sorted(
+            list(self.snippet_root.glob("*.mp4")) + list(self.snippet_root.glob("*.tmp.mp4")),
+            key=lambda p: p.stat().st_mtime if p.exists() else 0,
+        )
+        deleted = 0
+        for snippet in candidates:
+            if self.disk_free_pct() >= min_free_pct:
+                break
+            snippet.unlink(missing_ok=True)
+            deleted += 1
         return deleted
 
     def _segments_for_window(self, camera_id: str, start_ts: datetime, end_ts: datetime) -> list[Path]:

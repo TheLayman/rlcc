@@ -387,8 +387,13 @@ async def missing_pos_checker():
 
 async def snippet_cleanup():
     while True:
-        await asyncio.sleep(3600)
-        deps.video_manager.cleanup_old_snippets()
+        await asyncio.sleep(1800)  # 30 minutes
+        try:
+            await asyncio.to_thread(deps.video_manager.cleanup_old_snippets)
+            min_free_pct = float(deps.config.rules.get("snippet_low_disk_pct", 10.0))
+            await asyncio.to_thread(deps.video_manager.emergency_purge, min_free_pct)
+        except Exception as exc:
+            print(f"[snippet_cleanup] {exc}")
 
 
 @asynccontextmanager
