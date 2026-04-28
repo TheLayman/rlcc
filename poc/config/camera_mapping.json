@@ -269,5 +269,101 @@
         }
       ]
     }
+  },
+  {
+    "seller_window_id": "NSCIN10323_POS1",
+    "store_id": "NSCIN10323",
+    "pos_terminal_no": "POS 1",
+    "display_pos_label": "POS 1",
+    "camera_id": "cam-pulla-reddy-01",
+    "rtsp_url": "rtsp://kspoc:kspoc123@10.86.158.71:554/videoStreamId=2",
+    "xprotect_device_id": "",
+    "multi_pos": false,
+    "enabled": true,
+    "zones": {
+      "pos_zones": [
+        {
+          "zone_id": "POS1",
+          "seller_zone": [],
+          "customer_zone": [],
+          "midline": [],
+          "pos_zone": [],
+          "pos_screen_zone": [],
+          "bill_zone": []
+        }
+      ]
+    }
+  },
+  {
+    "seller_window_id": "NSCIN8244_POS1",
+    "store_id": "NSCIN8244",
+    "pos_terminal_no": "POS 1",
+    "display_pos_label": "POS 1",
+    "camera_id": "cam-enwrap-01",
+    "rtsp_url": "rtsp://kspoc:kspoc123@10.86.158.140/rtsp/defaultPrimary?streamType=u",
+    "xprotect_device_id": "",
+    "multi_pos": false,
+    "enabled": true,
+    "zones": {
+      "pos_zones": [
+        {
+          "zone_id": "POS1",
+          "seller_zone": [],
+          "customer_zone": [],
+          "midline": [],
+          "pos_zone": [],
+          "pos_screen_zone": [],
+          "bill_zone": []
+        }
+      ]
+    }
+  },
+  {
+    "seller_window_id": "NSCIN8260_POS1",
+    "store_id": "NSCIN8260",
+    "pos_terminal_no": "POS 1",
+    "display_pos_label": "POS 1",
+    "camera_id": "cam-karachi-bakery-01",
+    "rtsp_url": "rtsp://kspoc:kspoc123@10.86.158.172/rtsp/defaultPrimary?streamType=u",
+    "xprotect_device_id": "",
+    "multi_pos": false,
+    "enabled": true,
+    "zones": {
+      "pos_zones": [
+        {
+          "zone_id": "POS1",
+          "seller_zone": [],
+          "customer_zone": [],
+          "midline": [],
+          "pos_zone": [],
+          "pos_screen_zone": [],
+          "bill_zone": []
+        }
+      ]
+    }
+  },
+  {
+    "seller_window_id": "NSCIN10697_POS1",
+    "store_id": "NSCIN10697",
+    "pos_terminal_no": "POS 1",
+    "display_pos_label": "POS 1",
+    "camera_id": "cam-relaxo-01",
+    "rtsp_url": "rtsp://kspoc:kspoc123@10.86.158.179/rtsp/defaultPrimary?streamType=u",
+    "xprotect_device_id": "",
+    "multi_pos": false,
+    "enabled": true,
+    "zones": {
+      "pos_zones": [
+        {
+          "zone_id": "POS1",
+          "seller_zone": [],
+          "customer_zone": [],
+          "midline": [],
+          "pos_zone": [],
+          "pos_screen_zone": [],
+          "bill_zone": []
+        }
+      ]
+    }
   }
 ]

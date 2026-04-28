@@ -1,4 +1,4 @@
-# POC — 5 Stores on T4 Workstation
+# POC — 9 Stores on T4 Workstation
 
 ## Hardware
 
@@ -6,7 +6,7 @@ Single machine. Tesla T4 (16 GB VRAM), 32 GB RAM. Runs everything: CV inference,
 
 ## Scope
 
-5 stores, 1 camera per store (POS-facing), 5 RTSP streams total — all on the Dino POS pushing to our 9 RLCC endpoints. RTSP URLs and zone polygons configured directly on the server.
+9 stores, 1 camera per store (POS-facing), 8 RTSP streams (Nizami Daawat awaits camera install). 5 stores on the Dino POS, 4 on Retail POS — all push to our 9 RLCC endpoints. RTSP URLs configured directly on the server; zone polygons drawn via the dashboard zone tool.
 
 ## Architecture
 
@@ -333,16 +333,22 @@ Check: `curl http://localhost:8001/api/transactions | python3 -m json.tool`
 
 Backend, dashboard, and fraud engine code is production code from day one. CV inference stack, transport layer, and video source change.
 
-## 5 POC stores
+## 9 POC stores
 
-All five run the Dino POS and push to our 9 RLCC endpoints.
+5 Dino-POS + 4 Retail-POS, all pushing to our 9 RLCC endpoints. RTSP URLs from WAISL (24-Apr-2026 confirmation).
 
-| # | CIN | Store | Location | Category | Notes |
-|---|-----|-------|----------|----------|-------|
-| 1 | NDCIN1231 | Nizami Daawat | Aero Plaza | F&B – QSR | No camera assigned yet — push-only until RTSP wired up. |
-| 2 | NDCIN1422 | Cafe Niloufer | Airport Village | F&B – QSR & Dine In | Camera + RTSP configured on server. |
-| 3 | NDCIN2082 | Krispy Kreme | Aero Plaza | F&B – Bakery | Camera + RTSP configured on server. |
-| 4 | NDCIN2123 | Visitor Gallery | Fore Court | Services – Airport Entry Ticket | Included in scope despite "Services" classification (Dino POS counter behaves like F&B at the till). |
-| 5 | NDCIN2071 | Frank Hot Dog | Airport Village | F&B – QSR | Camera + RTSP configured on server. |
+| # | CIN | Store | POS | Location | Category | RTSP |
+|---|-----|-------|-----|----------|----------|------|
+| 1 | NDCIN1231 | Nizami Daawat       | Dino   | Aero Plaza      | F&B – QSR                       | **Pending** — push-only until camera install |
+| 2 | NDCIN1422 | Cafe Niloufer       | Dino   | Airport Village | F&B – QSR & Dine In             | 10.86.158.163 |
+| 3 | NDCIN2082 | Krispy Kreme        | Dino   | Aero Plaza      | F&B – Bakery                    | 10.86.158.196 |
+| 4 | NDCIN2123 | Visitor Gallery     | Dino   | Fore Court      | Services – Airport Entry Ticket | 10.86.158.168 |
+| 5 | NDCIN2071 | Frank Hot Dog       | Dino   | Airport Village | F&B – QSR                       | 10.86.158.230 |
+| 6 | NSCIN10323| Pulla Reddy Sweets  | Retail | Retail Village  | Retail – Packaged Food          | 10.86.158.71 |
+| 7 | NSCIN8244 | Enwrap              | Retail | Fore Court      | Services – Baggage Wrapping     | 10.86.158.140 |
+| 8 | NSCIN8260 | Karachi Bakery      | Retail | Airport Village | Retail – Bakery & Packed Food   | 10.86.158.172 |
+| 9 | NSCIN10697| Relaxo              | Retail | Arrivals        | Services – Massage Chair        | 10.86.158.179 |
 
-The previous POC seed (Ram Ki Bandi, KFC, Haldiram's-AeroPlaza) is dropped — replaced by the airport rollout list above.
+Killer Jeans (NSCIN10489) was on WAISL's RTSP list but excluded from scope. The previous POC seed (Ram Ki Bandi, KFC, Haldiram's-AeroPlaza) is dropped.
+
+For the four new entries (rows 6-9), the camera mappings carry the RTSP URL but no zone polygons yet — draw them via the dashboard's Store Config view before the fraud engine can do CV correlation for those stores.

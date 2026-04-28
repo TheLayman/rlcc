@@ -3,5 +3,9 @@
   {"cin": "NDCIN1422", "name": "Cafe Niloufer", "pos_system": "Posifly-Dino", "operator": ""},
   {"cin": "NDCIN2082", "name": "Krispy Kreme", "pos_system": "Posifly-Dino", "operator": ""},
   {"cin": "NDCIN2123", "name": "Visitor Gallery", "pos_system": "Posifly-Dino", "operator": ""},
-  {"cin": "NDCIN2071", "name": "Frank Hot Dog", "pos_system": "Posifly-Dino", "operator": ""}
+  {"cin": "NDCIN2071", "name": "Frank Hot Dog", "pos_system": "Posifly-Dino", "operator": ""},
+  {"cin": "NSCIN10323", "name": "Pulla Reddy Sweets", "pos_system": "Posifly-Retail", "operator": ""},
+  {"cin": "NSCIN8244", "name": "Enwrap", "pos_system": "Posifly-Retail", "operator": ""},
+  {"cin": "NSCIN8260", "name": "Karachi Bakery", "pos_system": "Posifly-Retail", "operator": ""},
+  {"cin": "NSCIN10697", "name": "Relaxo", "pos_system": "Posifly-Retail", "operator": ""}
 ]
