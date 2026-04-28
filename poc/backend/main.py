@@ -55,6 +55,35 @@ def _parse_dt(value) -> datetime | None:
     return parse_record_dt(value)
 
 
+def _dir_size_bytes(path: Path) -> int:
+    """Recursive total size of files under path.  Tolerant of missing dirs
+    and unreadable entries — returns 0 / partial total instead of raising."""
+    if not path.exists():
+        return 0
+    total = 0
+    try:
+        for entry in path.rglob("*"):
+            if entry.is_file():
+                try:
+                    total += entry.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        return total
+    return total
+
+
+def _collect_storage_stats():
+    """Bundle disk_usage + 3 directory walks into one sync call so the
+    /health handler can off-load it to a single asyncio.to_thread."""
+    return (
+        shutil.disk_usage(DATA_DIR),
+        _dir_size_bytes(DATA_DIR / "buffer"),
+        _dir_size_bytes(DATA_DIR / "snippets"),
+        _dir_size_bytes(DATA_DIR / "events"),
+    )
+
+
 def _serialize_alert(alert: Alert) -> dict:
     return serialize_alert(
         alert,
@@ -449,7 +478,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/health")
 async def health():
-    disk_usage = shutil.disk_usage(DATA_DIR)
+    # Disk stats + recursive directory sizes are sync IO; off-load to a
+    # thread so the event loop is never blocked even if data dirs grow.
+    disk_usage, buffer_bytes, snippets_bytes, events_bytes = await asyncio.to_thread(
+        _collect_storage_stats
+    )
     mapping_issues = deps.config.validate_mappings()
     recent_pos = deps.storage.get_recent_pos_events()
     last_push_event = recent_pos[0] if recent_pos else {}
@@ -488,6 +521,12 @@ async def health():
             "snippets_dir": str(DATA_DIR / "snippets"),
             "buffer_dir": str(DATA_DIR / "buffer"),
             "free_gb": round(disk_usage.free / (1024 ** 3), 2),
+            "total_gb": round(disk_usage.total / (1024 ** 3), 2),
+            "used_pct": round(100.0 * (disk_usage.total - disk_usage.free) / max(disk_usage.total, 1), 1),
+            "low_disk_warning": (disk_usage.free / max(disk_usage.total, 1)) < 0.10,
+            "buffer_bytes": buffer_bytes,
+            "snippets_bytes": snippets_bytes,
+            "events_bytes": events_bytes,
         },
         "services": {
             "redis_url": deps.settings.redis_url,
