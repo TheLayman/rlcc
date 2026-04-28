@@ -357,3 +357,149 @@ def _make_handler(event: str):
 
 for _path, _event in ROUTES:
     router.add_api_route(_path, _make_handler(_event), methods=["POST"])
+
+
+_CONTRACT_SAMPLES: dict[str, dict] = {
+    "BeginTransactionWithTillLookup": {
+        "event": "BeginTransactionWithTillLookup",
+        "transactionSessionId": "<uuid>",
+        "storeIdentifier": "NDCIN1231",
+        "posTerminalNo": "POS 1",
+        "cashier": "EMP-042",
+        "transactionType": "CompletedNormally",
+        "employeePurchase": False,
+        "outsideOpeningHours": "InsideOpeningHours",
+        "transactionTimeStamp": "2026-04-28T10:00:00Z",
+    },
+    "AddTransactionSaleLine": {
+        "event": "AddTransactionSaleLine",
+        "transactionSessionId": "<uuid>",
+        "storeIdentifier": "NDCIN1231",
+        "posTerminalNo": "POS 1",
+        "cashier": "EMP-042",
+        "lineTimeStamp": "2026-04-28T10:00:01Z",
+        "lineNumber": 1,
+        "itemID": "CB001",
+        "itemDescription": "Chicken Burger",
+        "itemQuantity": 1,
+        "itemUnitPrice": 249.0,
+        "totalAmount": 249.0,
+        "scanAttribute": "None",
+        "itemAttribute": "None",
+        "discountType": "NoLineDiscount",
+        "discount": 0.0,
+        "grantedBy": "",
+    },
+    "AddTransactionSaleLineWithTillLookup": {
+        "event": "AddTransactionSaleLineWithTillLookup",
+        "transactionSessionId": "<uuid>",
+        "storeIdentifier": "NDCIN1231",
+        "posTerminalNo": "POS 1",
+        "cashier": "EMP-042",
+        "lineTimeStamp": "2026-04-28T10:00:01Z",
+        "lineNumber": 1,
+        "itemID": "CB001",
+        "itemDescription": "Chicken Burger",
+        "itemQuantity": 1,
+        "itemUnitPrice": 249.0,
+        "totalAmount": 249.0,
+    },
+    "AddTransactionPaymentLine": {
+        "event": "AddTransactionPaymentLine",
+        "transactionSessionId": "<uuid>",
+        "storeIdentifier": "NDCIN1231",
+        "posTerminalNo": "POS 1",
+        "cashier": "EMP-042",
+        "lineTimeStamp": "2026-04-28T10:00:05Z",
+        "lineNumber": 2,
+        "lineAttribute": "None",
+        "paymentDescription": "Cash",
+        "amount": 249.0,
+        "cardType": "",
+        "paymentTypeID": "CASH",
+        "approvalCode": "",
+        "cardNo": "",
+    },
+    "AddTransactionTotalLine": {
+        "event": "AddTransactionTotalLine",
+        "transactionSessionId": "<uuid>",
+        "storeIdentifier": "NDCIN1231",
+        "posTerminalNo": "POS 1",
+        "cashier": "EMP-042",
+        "lineAttribute": "GrandTotal",
+        "totalDescription": "Grand Total",
+        "amount": 249.0,
+    },
+    "AddTransactionEvent": {
+        "event": "AddTransactionEvent",
+        "transactionSessionId": "<uuid>",
+        "storeIdentifier": "NDCIN1231",
+        "posTerminalNo": "POS 1",
+        "cashier": "EMP-042",
+        "lineTimeStamp": "2026-04-28T10:00:06Z",
+        "lineAttribute": "DrawerOpenedOutsideATransaction",
+        "eventDescription": "Cash drawer opened outside of a transaction",
+    },
+    "CommitTransaction": {
+        "event": "CommitTransaction",
+        "transactionSessionId": "<uuid>",
+        "storeIdentifier": "NDCIN1231",
+        "posTerminalNo": "POS 1",
+        "cashier": "EMP-042",
+        "transactionNumber": "BILL-12345",
+        "billNumber": "BILL-12345",
+        "transactionTimeStamp": "2026-04-28T10:00:08Z",
+    },
+    "BillReprint": {
+        "event": "BillReprint",
+        "storeIdentifier": "NDCIN1231",
+        "posTerminalNo": "POS 1",
+        "cashier": "EMP-042",
+        "transactionTimestamp": 1714298468000,
+        "billNumber": "BILL-12345",
+    },
+    "GetTill": {
+        "event": "GetTill",
+        "storeIdentifier": "NDCIN1231",
+        "tillDescription": "POS 1",
+    },
+}
+
+
+@router.get("/v1/rlcc/contract")
+async def receiver_contract():
+    """Self-describing schema for the push API.
+
+    Returned to the POS team so they can confirm field names + path/event
+    pairings + sample payload formats match what the assembler expects.
+    No auth required — read-only introspection.
+    """
+    return {
+        "auth_header": "x-authorization-key",
+        "content_type": "application/json",
+        "encoding_note": (
+            "Body MUST be parseable as JSON. Stringified JSON (a JSON-encoded "
+            "string whose value is itself JSON) is also accepted for backward "
+            "compatibility with Nukkad's double-encoded format."
+        ),
+        "common_fields": {
+            "transactionSessionId": "uuid that ties Begin/AddSaleLine/.../Commit together",
+            "storeIdentifier": "store CIN, must match an entry in stores.json",
+            "posTerminalNo": "POS terminal label, must match an enabled camera mapping",
+            "cashier": "cashier id (free-form string)",
+            "transactionTimeStamp / lineTimeStamp": "ISO-8601 with TZ; 'Z' or '+00:00'",
+            "transactionTimestamp (BillReprint)": "epoch milliseconds (Long)",
+        },
+        "endpoints": [
+            {"method": "POST", "path": path, "event": event}
+            for path, event in ROUTES
+        ],
+        "samples": _CONTRACT_SAMPLES,
+        "responses": {
+            "200": {"status": 200, "message": "Success", "event": "<event-name>"},
+            "200_duplicate": {"status": 200, "message": "duplicate, ignored"},
+            "200_no_session": {"status": 200, "message": "no session matched, ignored"},
+            "400": {"message": "<reason>"},
+            "401": {"message": "Unauthorized"},
+        },
+    }
