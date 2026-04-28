@@ -138,6 +138,10 @@ class TransactionSession(BaseModel):
     cv_receipt_detected: Optional[bool] = None
     cv_non_seller_count: int = 0
     cv_confidence: str = ""
+    cv_bill_hand_present: Optional[bool] = None
+    cv_screen_motion: Optional[bool] = None
+    cv_screen_bg: Optional[bool] = None
+    cv_screen_hand_present: Optional[bool] = None
     camera_id: str = ""
     device_id: str = ""
     snippet_path: str = ""
@@ -187,6 +191,10 @@ class CVWindow(BaseModel):
     non_seller_count_max: int = 0
     bill_motion_detected: bool = False
     bill_bg_change_detected: bool = False
+    screen_motion_detected: bool = False
+    screen_bg_change_detected: bool = False
+    bill_hand_present: bool = False
+    screen_hand_present: bool = False
     frame_count: int = 0
 
 

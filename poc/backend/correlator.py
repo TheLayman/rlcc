@@ -44,11 +44,19 @@ def correlate(txn: TransactionSession, cv_consumer: CVConsumer, config: Config) 
     non_seller_pct = sum(window.non_seller_present_pct * window.frame_count for window in windows) / total_frames
     bill_motion = any(window.bill_motion_detected for window in windows)
     bill_bg = any(window.bill_bg_change_detected for window in windows)
+    screen_motion = any(window.screen_motion_detected for window in windows)
+    screen_bg = any(window.screen_bg_change_detected for window in windows)
+    bill_hand = any(window.bill_hand_present for window in windows)
+    screen_hand = any(window.screen_hand_present for window in windows)
     max_non_seller = max(window.non_seller_count_max for window in windows)
 
     txn.cv_non_seller_present = non_seller_pct > 0.3
     txn.cv_non_seller_count = max_non_seller
     txn.cv_receipt_detected = bill_motion or bill_bg
+    txn.cv_bill_hand_present = bill_hand
+    txn.cv_screen_motion = screen_motion
+    txn.cv_screen_bg = screen_bg
+    txn.cv_screen_hand_present = screen_hand
     txn.cv_confidence = "REDUCED" if camera.multi_pos else "HIGH"
     txn.camera_id = camera.camera_id
     txn.device_id = camera.xprotect_device_id

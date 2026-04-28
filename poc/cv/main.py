@@ -85,6 +85,8 @@ class CameraState:
     zone_copresence_start: dict[str, datetime] = field(default_factory=dict)
     bill_prev_frames: dict[str, np.ndarray | None] = field(default_factory=dict)
     bill_baselines: dict[str, np.ndarray | None] = field(default_factory=dict)
+    screen_prev_frames: dict[str, np.ndarray | None] = field(default_factory=dict)
+    screen_baselines: dict[str, np.ndarray | None] = field(default_factory=dict)
     activity_last_published_at: dict[str, datetime] = field(default_factory=dict)
     activity_last_label: dict[str, str] = field(default_factory=dict)
     fps_samples: deque = field(default_factory=lambda: deque(maxlen=20))
@@ -470,7 +472,35 @@ class CVRuntime:
 
             seller_present = bool(raw_seller_present or held_seller)
 
-            bill_motion, bill_bg = self._bill_zone_status(frame, state, zone)
+            bill_motion, bill_bg = self._zone_motion_status(
+                frame=frame,
+                polygon=zone.bill_zone,
+                zone_id=zone.zone_id,
+                prev_frames=state.bill_prev_frames,
+                baselines=state.bill_baselines,
+            )
+            screen_motion, screen_bg = self._zone_motion_status(
+                frame=frame,
+                polygon=zone.pos_screen_zone,
+                zone_id=zone.zone_id,
+                prev_frames=state.screen_prev_frames,
+                baselines=state.screen_baselines,
+            )
+
+            # Per-frame hand-zone flags.  Only run pose if a seller is
+            # actually in this zone right now (raw, not held) — pose
+            # inference cost is per-detection, so skipping when the seller
+            # left avoids wasted work.
+            bill_hand_present = False
+            screen_hand_present = False
+            if raw_seller_present and self.activity_classifier.enabled:
+                seller_bbox = self._select_seller_bbox(zone.seller_zone, people)
+                if seller_bbox is not None:
+                    bill_hand_present, screen_hand_present = (
+                        self.activity_classifier.extract_hand_zone_flags(
+                            frame, seller_bbox, zone
+                        )
+                    )
 
             zones_payload.append(
                 {
@@ -478,6 +508,10 @@ class CVRuntime:
                     "seller": seller_present,
                     "bill_motion": bill_motion,
                     "bill_bg": bill_bg,
+                    "screen_motion": screen_motion,
+                    "screen_bg": screen_bg,
+                    "bill_hand_present": bill_hand_present,
+                    "screen_hand_present": screen_hand_present,
                 }
             )
 
@@ -504,14 +538,39 @@ class CVRuntime:
         state: CameraState,
         zone: PosZoneConfig,
     ) -> tuple[bool, bool]:
-        """Compute bill_motion (pixel-change pct vs previous frame) and
-        bill_bg (pixel-change pct vs learned EMA baseline).  The baseline
-        pauses updating whenever motion is detected so it learns the idle
-        scene only.
+        """Bill-zone motion + bg.  Thin wrapper kept for callers that only
+        need the bill-zone signals; new code should call _zone_motion_status
+        directly with the relevant polygon + state dicts."""
+        return self._zone_motion_status(
+            frame=frame,
+            polygon=zone.bill_zone,
+            zone_id=zone.zone_id,
+            prev_frames=state.bill_prev_frames,
+            baselines=state.bill_baselines,
+        )
+
+    def _zone_motion_status(
+        self,
+        *,
+        frame: np.ndarray,
+        polygon: list[list[int]],
+        zone_id: str,
+        prev_frames: dict[str, np.ndarray | None],
+        baselines: dict[str, np.ndarray | None],
+    ) -> tuple[bool, bool]:
+        """Compute (motion, bg) for an arbitrary polygon zone.
+
+        - motion: pixel-change pct vs previous frame in the zone bbox
+        - bg:     pixel-change pct vs a learned EMA baseline of the zone
+
+        The baseline pauses updating whenever motion is detected, so it
+        learns the idle scene only.  Thresholds are read from rule_config
+        (shared across bill / pos_screen zones — appropriate since both are
+        small fixed-camera regions).
         """
-        if cv2 is None or not zone.bill_zone:
+        if cv2 is None or not polygon:
             return False, False
-        x1, y1, x2, y2 = _polygon_bbox(zone.bill_zone)
+        x1, y1, x2, y2 = _polygon_bbox(polygon)
         x1 = max(x1, 0)
         y1 = max(y1, 0)
         x2 = max(x2, 0)
@@ -526,8 +585,8 @@ class CVRuntime:
         bg_threshold = self._rule("bill_bg_pct_threshold", 3.0)
         ema_alpha = min(max(self._rule("bill_bg_ema_alpha", 0.05), 0.0), 1.0)
 
-        previous = state.bill_prev_frames.get(zone.zone_id)
-        state.bill_prev_frames[zone.zone_id] = gray
+        previous = prev_frames.get(zone_id)
+        prev_frames[zone_id] = gray
 
         motion_pct = 0.0
         if previous is not None and previous.shape == gray.shape:
@@ -535,24 +594,24 @@ class CVRuntime:
             changed = int(np.count_nonzero(diff > pixel_delta))
             motion_pct = 100.0 * changed / diff.size
 
-        bill_motion = motion_pct > motion_threshold
+        motion = motion_pct > motion_threshold
 
-        baseline = state.bill_baselines.get(zone.zone_id)
+        baseline = baselines.get(zone_id)
         if baseline is None or baseline.shape != gray.shape:
-            state.bill_baselines[zone.zone_id] = gray.copy()
-            return bill_motion, False
+            baselines[zone_id] = gray.copy()
+            return motion, False
 
         bg_diff = np.abs(gray - baseline)
         bg_changed = int(np.count_nonzero(bg_diff > pixel_delta))
         bg_pct = 100.0 * bg_changed / bg_diff.size
-        bill_bg = bg_pct > bg_threshold
+        bg = bg_pct > bg_threshold
 
-        if not bill_motion:
-            state.bill_baselines[zone.zone_id] = (
+        if not motion:
+            baselines[zone_id] = (
                 (1.0 - ema_alpha) * baseline + ema_alpha * gray
             ).astype(np.float32)
 
-        return bill_motion, bill_bg
+        return motion, bg
 
     def _maybe_publish_activity(
         self,

@@ -249,9 +249,25 @@ class FraudEngine:
             self._trigger(txn, "28_drawer_no_customer")
 
     def _rule_29_bill_not_generated(self, txn: TransactionSession) -> None:
+        """Bill-not-generated alert.
+
+        Fires only when ALL of these confirm the bill never printed:
+        1. Transaction reached committed state (POS thinks it sold)
+        2. CV saw NO bill-zone motion or bg change in the window
+        3. CV saw NO seller hand near the bill zone in the window — if the
+           seller's hand was near the printer we treat that as ambiguous
+           (could be a quiet receipt) and suppress the alert.  Avoids
+           false positives where the printer fires below the motion
+           threshold but the seller is clearly handing something over.
+        4. cv_confidence is HIGH (not REDUCED / UNAVAILABLE) — i.e. CV
+           actually had a clean look at this terminal.
+        5. The matched camera/zone has a non-empty bill_zone polygon.
+        """
         if txn.status != "committed":
             return
         if txn.cv_receipt_detected is not False:
+            return
+        if txn.cv_bill_hand_present is True:
             return
         if txn.cv_confidence != "HIGH":
             return

@@ -92,3 +92,69 @@ def test_disabled_rule_skipped():
     txn.items = [SaleLine(scan_attribute="ManuallyEntered", item_description="Fries", total_amount=99)]
     alerts = engine.evaluate(txn)
     assert "8_manual_entry" not in txn.triggered_rules
+
+
+# -----------------------------------------------------------------
+# Rule 29 (bill_not_generated) — the gates were tightened to also
+# suppress when the seller's hand was visibly near the bill zone.
+# These tests use real camera_mapping.json (NDCIN1231 / POS 1 has
+# a non-empty bill_zone polygon) so _has_bill_zone_coverage passes.
+# -----------------------------------------------------------------
+
+
+def _make_engine_with_cameras() -> FraudEngine:
+    from backend.config import Config
+    return FraudEngine(_make_config(), camera_config=Config(config_dir="config"))
+
+
+def _make_committed_txn_with_cv(**overrides) -> TransactionSession:
+    txn = _make_txn(
+        store_id="NDCIN1231",
+        pos_terminal_no="POS 1",
+        camera_id="cam-nizami-01",
+        cv_confidence="HIGH",
+        cv_receipt_detected=False,
+        cv_bill_hand_present=False,
+    )
+    for key, value in overrides.items():
+        setattr(txn, key, value)
+    return txn
+
+
+def test_rule_29_fires_when_no_receipt_and_no_hand():
+    engine = _make_engine_with_cameras()
+    txn = _make_committed_txn_with_cv()
+    txn.items = [SaleLine(scan_attribute="Auto", item_description="X", total_amount=100)]
+    engine.evaluate(txn)
+    assert "29_bill_not_generated" in txn.triggered_rules
+
+
+def test_rule_29_suppressed_when_bill_hand_present():
+    engine = _make_engine_with_cameras()
+    txn = _make_committed_txn_with_cv(cv_bill_hand_present=True)
+    txn.items = [SaleLine(scan_attribute="Auto", item_description="X", total_amount=100)]
+    engine.evaluate(txn)
+    assert "29_bill_not_generated" not in txn.triggered_rules
+
+
+def test_rule_29_suppressed_when_receipt_detected():
+    engine = _make_engine_with_cameras()
+    txn = _make_committed_txn_with_cv(cv_receipt_detected=True)
+    txn.items = [SaleLine(scan_attribute="Auto", item_description="X", total_amount=100)]
+    engine.evaluate(txn)
+    assert "29_bill_not_generated" not in txn.triggered_rules
+
+
+def test_rule_29_suppressed_when_confidence_not_high():
+    engine = _make_engine_with_cameras()
+    txn = _make_committed_txn_with_cv(cv_confidence="REDUCED")
+    txn.items = [SaleLine(scan_attribute="Auto", item_description="X", total_amount=100)]
+    engine.evaluate(txn)
+    assert "29_bill_not_generated" not in txn.triggered_rules
+
+
+def test_rule_29_suppressed_when_not_committed():
+    engine = _make_engine_with_cameras()
+    txn = _make_committed_txn_with_cv(status="open")
+    engine.evaluate(txn)
+    assert "29_bill_not_generated" not in txn.triggered_rules

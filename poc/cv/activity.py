@@ -87,20 +87,20 @@ class SellerActivityClassifier:
     def enabled(self) -> bool:
         return self._model is not None
 
-    def classify(
+    def _extract_active_hand(
         self,
         frame: np.ndarray,
         seller_bbox: tuple[int, int, int, int],
-        zone: PosZoneConfig,
-    ) -> tuple[str, float]:
-        """Return (activity_label, confidence 0..1) from a seller crop.
+    ) -> tuple[float, float, float] | None:
+        """Run pose inference on the seller crop and return the dominant
+        wrist keypoint translated to frame coordinates.  Returns None if
+        the model is disabled, the crop is empty, no pose is detected, or
+        both wrists are below the confidence threshold.
 
-        seller_bbox is in full-frame coordinates.  Zone polygons are also
-        in full-frame coordinates, so we translate the pose keypoints back
-        to frame-space before the zone tests.
-        """
+        Shared by classify() and extract_hand_zone_flags() so we never run
+        pose inference twice for the same frame."""
         if self._model is None or cv2 is None:
-            return ACTIVITY_IDLE, 0.0
+            return None
 
         height, width = frame.shape[:2]
         x1, y1, x2, y2 = seller_bbox
@@ -110,7 +110,7 @@ class SellerActivityClassifier:
         y2 = max(y1 + 1, min(y2, height))
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
-            return ACTIVITY_IDLE, 0.0
+            return None
 
         try:
             results = self._model.predict(
@@ -121,14 +121,14 @@ class SellerActivityClassifier:
                 device=self._device,
             )
         except Exception:
-            return ACTIVITY_IDLE, 0.0
+            return None
 
         if not results or results[0].keypoints is None:
-            return ACTIVITY_IDLE, 0.0
+            return None
 
         keypoints_xy = results[0].keypoints.xy
         if keypoints_xy is None or len(keypoints_xy) == 0:
-            return ACTIVITY_IDLE, 0.0
+            return None
 
         kpts = keypoints_xy[0].cpu().numpy().astype(float)
         conf_tensor = results[0].keypoints.conf
@@ -145,12 +145,49 @@ class SellerActivityClassifier:
         left_wrist = self._keypoint(kpts, confidences, COCO_LEFT_WRIST)
         right_wrist = self._keypoint(kpts, confidences, COCO_RIGHT_WRIST)
 
-        # Pick the wrist with the higher confidence.  If both are weak,
-        # fall back to idle.
         candidates = [w for w in (right_wrist, left_wrist) if w is not None]
         if not candidates:
+            return None
+        return max(candidates, key=lambda w: w[2])
+
+    def extract_hand_zone_flags(
+        self,
+        frame: np.ndarray,
+        seller_bbox: tuple[int, int, int, int],
+        zone: PosZoneConfig,
+    ) -> tuple[bool, bool]:
+        """Return (bill_hand_present, screen_hand_present) for the seller's
+        dominant wrist.  Cheap per-frame signal — runs one pose inference
+        and two polygon tests.  No classification."""
+        hand = self._extract_active_hand(frame, seller_bbox)
+        if hand is None:
+            return False, False
+        hand_point = (hand[0], hand[1])
+        bill_poly = _inflate_polygon(zone.bill_zone, self._padding) if zone.bill_zone else None
+        screen_poly = (
+            _inflate_polygon(zone.pos_screen_zone, self._padding) if zone.pos_screen_zone else None
+        )
+        return (
+            _point_in_polygon(bill_poly, hand_point),
+            _point_in_polygon(screen_poly, hand_point),
+        )
+
+    def classify(
+        self,
+        frame: np.ndarray,
+        seller_bbox: tuple[int, int, int, int],
+        zone: PosZoneConfig,
+    ) -> tuple[str, float]:
+        """Return (activity_label, confidence 0..1) from a seller crop.
+
+        seller_bbox is in full-frame coordinates.  Zone polygons are also
+        in full-frame coordinates, so we translate the pose keypoints back
+        to frame-space before the zone tests.
+        """
+        hand = self._extract_active_hand(frame, seller_bbox)
+        if hand is None:
             return ACTIVITY_IDLE, 0.0
-        hand = max(candidates, key=lambda w: w[2])
+
         hand_point = (hand[0], hand[1])
         hand_conf = min(1.0, max(0.0, hand[2]))
 

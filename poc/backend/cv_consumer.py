@@ -112,6 +112,10 @@ class CVConsumer:
                     "non_seller_max": 0,
                     "bill_motion": False,
                     "bill_bg": False,
+                    "screen_motion": False,
+                    "screen_bg": False,
+                    "bill_hand_present": False,
+                    "screen_hand_present": False,
                     "frame_count": 0,
                 }
 
@@ -130,6 +134,10 @@ class CVConsumer:
                     "non_seller_max": 0,
                     "bill_motion": False,
                     "bill_bg": False,
+                    "screen_motion": False,
+                    "screen_bg": False,
+                    "bill_hand_present": False,
+                    "screen_hand_present": False,
                     "frame_count": 0,
                 }
                 acc = self._accum[key]
@@ -144,6 +152,14 @@ class CVConsumer:
                 acc["bill_motion"] = True
             if zone_data.get("bill_bg", False):
                 acc["bill_bg"] = True
+            if zone_data.get("screen_motion", False):
+                acc["screen_motion"] = True
+            if zone_data.get("screen_bg", False):
+                acc["screen_bg"] = True
+            if zone_data.get("bill_hand_present", False):
+                acc["bill_hand_present"] = True
+            if zone_data.get("screen_hand_present", False):
+                acc["screen_hand_present"] = True
 
             self._update_activity_state(
                 store_id=signal["store_id"],
@@ -199,6 +215,10 @@ class CVConsumer:
             non_seller_count_max=acc["non_seller_max"],
             bill_motion_detected=acc["bill_motion"],
             bill_bg_change_detected=acc["bill_bg"],
+            screen_motion_detected=acc.get("screen_motion", False),
+            screen_bg_change_detected=acc.get("screen_bg", False),
+            bill_hand_present=acc.get("bill_hand_present", False),
+            screen_hand_present=acc.get("screen_hand_present", False),
             frame_count=acc["frame_count"],
         )
         self.windows[key].append(window)
