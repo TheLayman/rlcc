@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import time
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 import backend.deps as deps
@@ -458,6 +460,34 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Sliding-window rate limiter for the 9 push endpoints under /v1/rlcc/.
+# We share one bucket across all of them since they all come from the same
+# upstream POS feed and the cap is "events per minute the feed can push".
+# Single asyncio.Lock + deque keeps it thread-safe and allocation-free.
+_RECEIVER_PATH_PREFIX = "/v1/rlcc/"
+_receiver_rate_lock = asyncio.Lock()
+_receiver_rate_window: deque = deque()
+
+
+@app.middleware("http")
+async def _receiver_rate_limit(request: Request, call_next):
+    if request.method != "POST" or not request.url.path.startswith(_RECEIVER_PATH_PREFIX):
+        return await call_next(request)
+    limit = max(deps.settings.receiver_rate_limit_per_minute, 1)
+    now = time.monotonic()
+    async with _receiver_rate_lock:
+        while _receiver_rate_window and now - _receiver_rate_window[0] > 60.0:
+            _receiver_rate_window.popleft()
+        if len(_receiver_rate_window) >= limit:
+            return JSONResponse(
+                status_code=429,
+                content={"status": 429, "message": "rate limit exceeded"},
+                headers={"Retry-After": "1"},
+            )
+        _receiver_rate_window.append(now)
+    return await call_next(request)
 
 from backend.camera_api import router as camera_router
 from backend.receiver import router as receiver_router

@@ -27,6 +27,7 @@ class Settings:
     video_retention_days: int
     torch_whl_index_url: str
     dashboard_origins: list[str]
+    receiver_rate_limit_per_minute: int
 
 
 def _parse_origins(raw: str) -> list[str]:
@@ -53,4 +54,5 @@ def get_settings(env_path: Path | None = None) -> Settings:
         video_retention_days=int(os.getenv("VIDEO_RETENTION_DAYS", "7")),
         torch_whl_index_url=os.getenv("TORCH_WHL_INDEX_URL", "https://download.pytorch.org/whl/cu124"),
         dashboard_origins=_parse_origins(os.getenv("DASHBOARD_ORIGINS", "")),
+        receiver_rate_limit_per_minute=int(os.getenv("RECEIVER_RATE_LIMIT_PER_MINUTE", "1200")),
     )
