@@ -191,11 +191,14 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
         )
     payload.setdefault("event", expected_event)
 
-    if deps.storage.is_duplicate(payload):
-        await _broadcast_raw_pos()
-        return {"status": 200, "message": "duplicate, ignored"}
-    deps.storage.append_event(payload)
-    deps.storage.mark_seen(payload)
+    # GetTill is an idempotent query, not a stateful event — skip dedup so
+    # repeated lookups (which all share an empty dedup key) don't get suppressed.
+    if expected_event != "GetTill":
+        if deps.storage.is_duplicate(payload):
+            await _broadcast_raw_pos()
+            return {"status": 200, "message": "duplicate, ignored"}
+        deps.storage.append_event(payload)
+        deps.storage.mark_seen(payload)
 
     store_id = payload.get("storeIdentifier", "")
     pos_terminal_no = payload.get("posTerminalNo", "")
@@ -272,6 +275,18 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
                     await deps.ws_manager.broadcast("NEW_TRANSACTION", serialize_transaction(txn, deps.config))
                     for alert in alerts:
                         await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
+            else:
+                # Unknown session — likely a stray retry or a Commit that arrived
+                # after we restarted and lost the session. Don't 400 (Nukkad's queue
+                # would keep retrying); ack with a distinguishing message so the
+                # caller can tell the no-op case apart from a real commit.
+                await _broadcast_raw_pos()
+                return {
+                    "status": 200,
+                    "message": "no session matched, ignored",
+                    "event": expected_event,
+                    "transactionSessionId": payload.get("transactionSessionId", ""),
+                }
 
         elif expected_event == "BillReprint":
             # Spec §4.9 uses `billNumber` and `transactionTimestamp` (Long ms).

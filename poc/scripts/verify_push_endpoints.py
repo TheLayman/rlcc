@@ -353,11 +353,16 @@ def _event_path_mismatch(sid: str) -> list[Step]:
 
 
 def _commit_without_begin(sid: str) -> list[Step]:
-    # No prior Begin → assembler raises "missing transactionSessionId" → 400.
+    # No prior Begin → receiver acks with 200 and a distinguishing message so
+    # Nukkad's queue doesn't keep retrying. Lenient by design: a Commit landing
+    # without a session is usually a stray retry or a post-restart replay, not
+    # a fraud signal. The "no session matched" message lets us tell it apart
+    # from a real commit in logs.
     return [
-        Step("Commit for unknown session → 400",
+        Step("Commit for unknown session → 200 'no session matched'",
              PATH_FOR["CommitTransaction"],
-             commit_payload(sid, "VERIFY-BILL-ORPHAN"), 400),
+             commit_payload(sid, "VERIFY-BILL-ORPHAN"), 200,
+             expect_message_contains="no session matched"),
     ]
 
 
