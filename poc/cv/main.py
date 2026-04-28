@@ -4,6 +4,7 @@ import os
 import subprocess
 import threading
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -86,6 +87,8 @@ class CameraState:
     bill_baselines: dict[str, np.ndarray | None] = field(default_factory=dict)
     activity_last_published_at: dict[str, datetime] = field(default_factory=dict)
     activity_last_label: dict[str, str] = field(default_factory=dict)
+    fps_samples: deque = field(default_factory=lambda: deque(maxlen=20))
+    current_fps: float = 0.0
 
 
 class CVRuntime:
@@ -156,6 +159,7 @@ class CVRuntime:
 
     def cameras(self) -> list[dict]:
         with self.lock:
+            target_fps = self._rule("cv_target_fps", 5.0)
             return [
                 {
                     "camera_id": state.camera.camera_id,
@@ -166,6 +170,10 @@ class CVRuntime:
                     "source_mode": state.source_mode,
                     "last_frame_at": state.last_frame_at,
                     "last_error": state.last_error,
+                    "current_fps": state.current_fps,
+                    "target_fps": target_fps,
+                    "frame_count": state.frame_count,
+                    "fps_starved": state.current_fps > 0 and state.current_fps < target_fps * 0.6,
                 }
                 for state in self.states.values()
             ]
@@ -182,6 +190,7 @@ class CVRuntime:
         state = self.states[camera_id]
         camera = state.camera
         capture = None
+        last_frame_monotonic: float | None = None
 
         if cv2 is None:
             state.last_error = "opencv-python-headless is not installed"
@@ -222,6 +231,16 @@ class CVRuntime:
             self._maybe_publish_activity(camera, state, frame, people, signal)
             annotated = self._annotate(frame.copy(), camera, signal, people)
             encoded = self._encode_frame(annotated)
+
+            now_monotonic = time.monotonic()
+            if last_frame_monotonic is not None:
+                delta = now_monotonic - last_frame_monotonic
+                if delta > 0:
+                    state.fps_samples.append(1.0 / delta)
+                    state.current_fps = round(
+                        sum(state.fps_samples) / len(state.fps_samples), 2
+                    )
+            last_frame_monotonic = now_monotonic
 
             with self.lock:
                 state.latest_frame = encoded
