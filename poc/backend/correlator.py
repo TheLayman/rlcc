@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from backend.config import Config, normalize_terminal
 from backend.cv_consumer import CVConsumer
 from backend.models import TransactionSession
+from backend.persistence import parse_dt
 
 
 def correlate(txn: TransactionSession, cv_consumer: CVConsumer, config: Config) -> TransactionSession:
@@ -15,12 +16,14 @@ def correlate(txn: TransactionSession, cv_consumer: CVConsumer, config: Config) 
 
     pos_zone = camera.pos_zones[0].zone_id if camera.pos_zones else normalize_terminal(txn.pos_terminal_no)
 
-    try:
-        start = datetime.fromisoformat(txn.started_at.replace("Z", "+00:00")) if txn.started_at else None
-        end = txn.committed_at
-    except (ValueError, AttributeError):
-        txn.cv_confidence = "UNAVAILABLE"
-        return txn
+    # Use persistence.parse_dt so naive Nukkad timestamps (live-prod sends
+    # them tz-less per BACKEND_DESIGN §11) are normalized IST→UTC.  Without
+    # this the CV window comparison either drifts 5.5 hours OR raises
+    # TypeError comparing naive vs tz-aware datetimes.
+    start = parse_dt(txn.started_at) if txn.started_at else None
+    end = txn.committed_at if isinstance(txn.committed_at, datetime) else parse_dt(txn.committed_at)
+    if end is not None and end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
 
     if not start or not end:
         txn.cv_confidence = "UNAVAILABLE"

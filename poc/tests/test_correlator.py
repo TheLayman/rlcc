@@ -108,3 +108,53 @@ def test_correlate_ignores_windows_from_other_camera():
 
     assert result.cv_confidence == "UNAVAILABLE"
     assert result.camera_id == "cam-target"
+
+
+def test_correlate_handles_naive_ist_started_at():
+    """Live-prod Nukkad sends naive timestamps that the receiver assumes are
+    IST.  Correlator must apply the same IST→UTC conversion before window
+    matching, otherwise the comparison either drifts 5.5 hours or raises
+    TypeError (naive vs tz-aware).
+    """
+    # CV window is at "now" in UTC.  Naive started_at expressed in IST should
+    # land inside the window after conversion.
+    now_utc = datetime.now(timezone.utc)
+    cv = CVConsumer.__new__(CVConsumer)
+    cv.windows = {}
+    cv.latest = {}
+    cv._accum = {}
+    window = CVWindow(
+        pos_zone="POS1",
+        camera_id="cam-x",
+        window_start=now_utc - timedelta(seconds=30),
+        window_end=now_utc + timedelta(seconds=30),
+        seller_present_pct=0.9,
+        non_seller_present_pct=0.7,
+        non_seller_count_max=1,
+        bill_motion_detected=False,
+        bill_bg_change_detected=False,
+        frame_count=180,
+    )
+    cv.windows[CVConsumer.window_key("cam-x", "POS1")] = [window]
+
+    config = _make_config_with_camera("STORE_POS 1", "cam-x", "POS1")
+
+    # Construct a naive IST timestamp that corresponds to "now" in UTC.
+    ist_offset = timedelta(hours=5, minutes=30)
+    naive_ist_started = (now_utc + ist_offset).replace(tzinfo=None).isoformat()
+
+    txn = TransactionSession(
+        id="TXN-IST-001",
+        store_id="STORE",
+        pos_terminal_no="POS 1",
+        source="push_assembled",
+        started_at=naive_ist_started,   # naive — no tz suffix
+        committed_at=now_utc,
+    )
+
+    result = correlate(txn, cv, config)
+
+    # If the bug is present (no IST conversion), this would either be
+    # UNAVAILABLE (5.5h drift means no window overlap) or raise TypeError.
+    assert result.cv_confidence == "HIGH"
+    assert result.cv_non_seller_present is True
