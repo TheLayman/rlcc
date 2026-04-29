@@ -471,9 +471,14 @@ _receiver_rate_lock = asyncio.Lock()
 _receiver_rate_window: deque = deque()
 
 
+_VERIFY_HEADER = "x-rlcc-verify"  # set by poc/scripts/verify_push_endpoints.py to opt out of logging + rate limiting
+
+
 @app.middleware("http")
 async def _receiver_rate_limit(request: Request, call_next):
     if request.method != "POST" or not request.url.path.startswith(_RECEIVER_PATH_PREFIX):
+        return await call_next(request)
+    if request.headers.get(_VERIFY_HEADER):
         return await call_next(request)
     limit = max(deps.settings.receiver_rate_limit_per_minute, 1)
     now = time.monotonic()
@@ -509,6 +514,11 @@ def _safe_decode(b: bytes) -> str:
 @app.middleware("http")
 async def _rlcc_traffic_log(request: Request, call_next):
     if not request.url.path.startswith(_RECEIVER_PATH_PREFIX):
+        return await call_next(request)
+
+    # Verify-script traffic carries x-rlcc-verify and must NOT pollute api.jsonl
+    # — those runs are synthetic and would drown out real Nukkad traffic.
+    if request.headers.get(_VERIFY_HEADER):
         return await call_next(request)
 
     request_id = _uuid.uuid4().hex[:12]

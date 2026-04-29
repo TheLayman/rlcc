@@ -273,8 +273,20 @@ class Scenario:
 
 # ---------- scenario library --------------------------------------------------
 
+# --- Real Nukkad flow: GetTill -> Begin -> ... -> Commit ----------------------
+# Per Nukkad confirmation: GetTill is the first API call of every transaction.
+# Without a successful GetTill, BeginTransactionWithTillLookup never fires.
+# Transaction-flow scenarios start with this prelude so they mirror prod traffic.
+
+def _get_till_step() -> Step:
+    return Step("GetTill (assigns Till)",
+                PATH_FOR["GetTill"], get_till_payload(), 200,
+                expect_data_keys=("ErrorCode", "Succeeded", "Till"))
+
+
 def _happy_path(sid: str) -> list[Step]:
     return [
+        _get_till_step(),
         Step("Begin (envelope has TransactionSessionId)",
              PATH_FOR["BeginTransactionWithTillLookup"], begin_payload(sid), 200,
              expect_data_keys=("ErrorCode", "Succeeded", "TransactionSessionId")),
@@ -289,6 +301,7 @@ def _happy_path(sid: str) -> list[Step]:
 def _fractional_qty(sid: str) -> list[Step]:
     # 1.250 kg item — used to crash int() coercion before models.py was fixed.
     return [
+        _get_till_step(),
         Step("Begin", PATH_FOR["BeginTransactionWithTillLookup"], begin_payload(sid), 200),
         Step("Sale (1.250 kg)", PATH_FOR["AddTransactionSaleLine"],
              sale_payload(sid, 1, itemQuantity=1.250, itemUnitPrice=80.0, totalAmount=100.0,
@@ -300,6 +313,7 @@ def _fractional_qty(sid: str) -> list[Step]:
 def _stringified_bool(sid: str) -> list[Step]:
     # "false" as a string used to flip employeePurchase to True.
     return [
+        _get_till_step(),
         Step("Begin (employeePurchase=\"false\" string)",
              PATH_FOR["BeginTransactionWithTillLookup"],
              begin_payload(sid, employeePurchase="false", isPreviousTransaction="false"), 200,
@@ -310,11 +324,50 @@ def _stringified_bool(sid: str) -> list[Step]:
 
 def _sale_line_with_till_lookup(sid: str) -> list[Step]:
     return [
+        _get_till_step(),
         Step("Begin",  PATH_FOR["BeginTransactionWithTillLookup"], begin_payload(sid), 200),
         Step("Sale (with till lookup)", PATH_FOR["AddTransactionSaleLineWithTillLookup"],
              {**sale_payload(sid, 1, lineTimeStamp=datetime.now(timezone.utc).isoformat()),
               "event": "AddTransactionSaleLineWithTillLookup"}, 200),
         Step("Commit", PATH_FOR["CommitTransaction"], commit_payload(sid, "VERIFY-BILL-WTL"), 200),
+    ]
+
+
+def _live_prod_shape(sid: str) -> list[Step]:
+    # Mirrors the actual payload shape Nukkad sends in liveprod (per the
+    # 2026-04-29 sample): posBillNum on Commit, naive ISO lineTimeStamp,
+    # ManuallyEntered scanAttribute, posTerminalNo as a numeric string.
+    naive_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")  # no Z → naive
+    return [
+        Step("GetTill", PATH_FOR["GetTill"],
+             get_till_payload(posTerminalNo="383", tillDescription="POS 1", branch="NSCIN10489",
+                              storeIdentifier="NSCIN10489"), 200,
+             expect_data_keys=("Till",)),
+        Step("Begin",
+             PATH_FOR["BeginTransactionWithTillLookup"],
+             begin_payload(sid, posTerminalNo="383", branch="NSCIN10489",
+                           storeIdentifier="NSCIN10489",
+                           transactionTimeStamp=naive_iso), 200),
+        Step("Sale (ManuallyEntered, naive ts)",
+             PATH_FOR["AddTransactionSaleLine"],
+             sale_payload(sid, 1, posTerminalNo="383", storeIdentifier="NSCIN10489",
+                          scanAttribute="ManuallyEntered", lineTimeStamp=naive_iso,
+                          itemUnitPrice=10, totalAmount=10), 200),
+        Step("Payment (Card)",
+             PATH_FOR["AddTransactionPaymentLine"],
+             payment_payload(sid, amount=10, posTerminalNo="383",
+                             storeIdentifier="NSCIN10489", lineAttribute="CreditCard",
+                             paymentDescription="CARD", lineTimeStamp=naive_iso), 200),
+        Step("Total",
+             PATH_FOR["AddTransactionTotalLine"],
+             total_payload(sid, amount=10, posTerminalNo="383",
+                           storeIdentifier="NSCIN10489", lineTimeStamp=naive_iso), 200),
+        # Commit uses posBillNum (Nukkad's key), not transactionNumber (spec key).
+        Step("Commit (posBillNum)",
+             PATH_FOR["CommitTransaction"],
+             {"event": "CommitTransaction", "applicationType": "Retail",
+              "storeIdentifier": "NSCIN10489", "posTerminalNo": "383",
+              "transactionSessionId": sid, "posBillNum": f"AAAA{sid[-8:]}"}, 200),
     ]
 
 
@@ -388,8 +441,9 @@ def _duplicate_event(sid: str) -> list[Step]:
 
 
 def _empty_transaction(sid: str) -> list[Step]:
-    # Begin then immediately Commit, no sale lines. Should still 200 (null txn).
+    # GetTill → Begin → Commit (no sale lines). Should still 200 (null txn).
     return [
+        _get_till_step(),
         Step("Begin",                          PATH_FOR["BeginTransactionWithTillLookup"], begin_payload(sid), 200),
         Step("Commit (no sale lines, no total)", PATH_FOR["CommitTransaction"], commit_payload(sid, "VERIFY-BILL-EMPTY"), 200),
     ]
@@ -397,6 +451,7 @@ def _empty_transaction(sid: str) -> list[Step]:
 
 def _suspend_resume(sid: str) -> list[Step]:
     return [
+        _get_till_step(),
         Step("Begin",     PATH_FOR["BeginTransactionWithTillLookup"], begin_payload(sid), 200),
         Step("Sale",      PATH_FOR["AddTransactionSaleLine"],         sale_payload(sid, 1), 200),
         Step("Suspended", PATH_FOR["AddTransactionEvent"],            add_event_payload(sid, "TransactionSuspended"), 200),
@@ -407,6 +462,7 @@ def _suspend_resume(sid: str) -> list[Step]:
 
 def _split_tender(sid: str) -> list[Step]:
     return [
+        _get_till_step(),
         Step("Begin",       PATH_FOR["BeginTransactionWithTillLookup"], begin_payload(sid), 200),
         Step("Sale 200",    PATH_FOR["AddTransactionSaleLine"],         sale_payload(sid, 1, totalAmount=200.0), 200),
         Step("Pay 100 cash",PATH_FOR["AddTransactionPaymentLine"],      payment_payload(sid, amount=100.0,
@@ -452,18 +508,19 @@ def _malformed_json(sid: str) -> list[Step]:
 
 
 SCENARIOS: list[Scenario] = [
-    Scenario("happy_path",        "Happy path — full transaction",       "Begin → 2 sale lines → payment → total → commit (asserts Begin envelope shape)", _happy_path),
-    Scenario("with_till_lookup",  "AddTransactionSaleLineWithTillLookup","Begin → sale-with-till-lookup → commit", _sale_line_with_till_lookup),
-    Scenario("split_tender",      "Split tender (cash + UPI)",           "Two payment lines on the same session", _split_tender),
-    Scenario("suspend_resume",    "Suspend → Resume → Commit",           "AddTransactionEvent lifecycle", _suspend_resume),
-    Scenario("empty_transaction", "Empty transaction",                   "Begin then Commit with no sale lines", _empty_transaction),
+    Scenario("happy_path",        "Happy path — full Nukkad flow",       "GetTill → Begin → 2 sale lines → payment → total → commit (asserts envelope shape on GetTill + Begin)", _happy_path),
+    Scenario("live_prod_shape",   "Live-prod payload shape",             "Mirrors what Nukkad actually sends: posBillNum on Commit, naive ISO timestamps, posTerminalNo='383', ManuallyEntered scan", _live_prod_shape),
+    Scenario("with_till_lookup",  "AddTransactionSaleLineWithTillLookup","GetTill → Begin → sale-with-till-lookup → commit", _sale_line_with_till_lookup),
+    Scenario("split_tender",      "Split tender (cash + UPI)",           "GetTill → Begin → sale → 2 payment lines → total → commit", _split_tender),
+    Scenario("suspend_resume",    "Suspend → Resume → Commit",           "GetTill → Begin → sale → suspend → resume → commit (lifecycle events)", _suspend_resume),
+    Scenario("empty_transaction", "Empty transaction",                   "GetTill → Begin → Commit with no sale lines", _empty_transaction),
     Scenario("fractional_qty",    "Fractional itemQuantity (1.250 kg)",  "Real grocery POS sends decimal kg quantities", _fractional_qty),
     Scenario("stringified_bool",  "Stringified bool flags",              "employeePurchase=\"false\" must not flip to True", _stringified_bool),
-    Scenario("get_till_assigns",  "GetTill assigns a Till",              "Must always succeed — Nukkad's POS gates the whole transaction flow on this", _get_till_assigns),
+    Scenario("get_till_assigns",  "GetTill standalone",                  "Must always succeed — Nukkad's POS gates the whole transaction flow on this", _get_till_assigns),
     Scenario("bill_reprint",      "BillReprint standalone",              "Reprint event (spec keys: billNumber + Long-ms transactionTimestamp)", _bill_reprint),
     Scenario("duplicate_event",   "Duplicate-event dedupe",              "Same Begin twice — second is dropped as duplicate", _duplicate_event),
-    Scenario("commit_no_begin",   "Commit without prior Begin",          "Should 400, not 500", _commit_without_begin),
-    Scenario("sale_no_begin",     "Sale line for unknown session",       "Should not 500", _sale_before_begin),
+    Scenario("commit_no_begin",   "Commit without prior Begin",          "Edge case — should 400, not 500", _commit_without_begin),
+    Scenario("sale_no_begin",     "Sale line for unknown session",       "Edge case — should not 500", _sale_before_begin),
     Scenario("event_mismatch",    "Event/route mismatch",                "Commit body posted to Begin route → 400", _event_path_mismatch),
     Scenario("malformed_json",    "Malformed JSON body",                 "Garbage body → 400", _malformed_json),
     Scenario("stringified_body",  "Stringified-JSON body accepted",      "Double-encoded body still parses", _stringified_body),
@@ -498,6 +555,11 @@ def run_scenario(base: str, default_auth: str, scn: Scenario, timeout: float) ->
             pass  # explicitly omit
         else:
             headers["x-authorization-key"] = step.auth_key
+
+        # Tells the receiver this is verify-script traffic — skips api.jsonl
+        # logging and rate limiting so a verify run doesn't pollute real-traffic
+        # logs or burn the rate-limit budget.
+        headers["x-rlcc-verify"] = "1"
 
         status, raw, parsed = post(url, headers, body, timeout=timeout)
 

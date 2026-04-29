@@ -92,21 +92,22 @@ def _parse_ts_or_ms(value) -> datetime | None:
 import hashlib
 
 
-def _assign_till(store_id: str, pos_terminal_no: str, till_description: str) -> str:
-    """Assign a numeric Till for a (store, terminal) pair.
+def _assign_till(branch: str, pos_terminal_no: str) -> str:
+    """Assign a numeric Till that is unique per (branch, posTerminalNo) pair.
 
-    Prefer digits already present in posTerminalNo / tillDescription so a
-    human-readable input like "POS 3" yields "3" — Nukkad's POS reuses this
-    Till value across subsequent calls so it should be stable and recognisable.
-    Falls back to a stable hash of (store, terminal) when no digits are present
-    (e.g. inputs like "Counter A").
+    `branch` carries the store CIN in Nukkad's format (e.g. "NSCIN10489").
+    Same (branch, terminal) → same Till, every time, with no server state.
+    Different (branch, terminal) → near-certainly different Till
+    (md5[:6] mod 1_000_000 ≈ 0.1% collision risk across 50 combos, fine for
+    POC scale). Nukkad's POS reuses the Till in downstream calls so it must
+    be stable across restarts.
+
+    NB: We intentionally don't shortcut to "POS 3" → "3" anymore — that
+    collides across stores (every "POS 1" everywhere would map to "1"),
+    violating the per-(branch, terminal) uniqueness contract.
     """
-    for source in (pos_terminal_no, till_description):
-        digits = "".join(ch for ch in (source or "") if ch.isdigit())
-        if digits:
-            return digits
-    blob = f"{store_id}|{pos_terminal_no}|{till_description}".encode("utf-8")
-    return str(int(hashlib.md5(blob).hexdigest()[:4], 16) % 10000)
+    blob = f"{(branch or '').strip()}|{(pos_terminal_no or '').strip()}".encode("utf-8")
+    return str(int(hashlib.md5(blob).hexdigest()[:6], 16) % 1_000_000)
 
 
 def _camera_for(store_id: str, pos_terminal_no: str):
@@ -246,11 +247,10 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
             # transaction flow on a successful response (Begin/Sale/Commit
             # don't fire until we hand back a Till), so this MUST always
             # succeed. The Till is reused by Nukkad in downstream calls — see
-            # _assign_till for the (deterministic, numeric) derivation.
+            # _assign_till for the per-(branch, terminal) derivation.
             till = _assign_till(
-                store_id,
+                payload.get("branch") or store_id,
                 payload.get("posTerminalNo", ""),
-                payload.get("tillDescription", ""),
             )
             await _broadcast_raw_pos()
             return {
