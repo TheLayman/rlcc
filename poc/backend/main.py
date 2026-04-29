@@ -652,9 +652,123 @@ def _build_transactions_response() -> dict:
     return {"transactions": serialized, "bills_map": bills_map, "count": len(serialized)}
 
 
+def _filter_transactions(
+    transactions: list[TransactionSession],
+    *,
+    from_dt: datetime | None,
+    to_dt: datetime | None,
+    risks: set[str],
+    stores: set[str],
+    payment_modes: set[str],
+    rule_ids: set[str],
+    search: str,
+) -> list[TransactionSession]:
+    """Apply BRD §13 filters to a transaction list. Empty filter set = pass-through."""
+    needle = (search or "").strip().lower()
+    out: list[TransactionSession] = []
+    for txn in transactions:
+        ts = _parse_dt(txn.committed_at or txn.started_at)
+        if ts and ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if from_dt and ts and ts < from_dt:
+            continue
+        if to_dt and ts and ts > to_dt:
+            continue
+        if risks and (txn.risk_level or "Low") not in risks:
+            continue
+        if stores and txn.store_id not in stores:
+            continue
+        if rule_ids and not (set(txn.triggered_rules) & rule_ids):
+            continue
+        if payment_modes:
+            txn_modes = {(p.line_attribute or p.payment_description or "Unknown") for p in (txn.payments or [])}
+            if not (txn_modes & payment_modes):
+                continue
+        if needle:
+            haystack = " ".join(filter(None, [
+                txn.store_name, txn.store_id, txn.bill_number, txn.transaction_number,
+                txn.cashier_id, txn.pos_terminal_no, txn.display_pos_label,
+            ])).lower()
+            if needle not in haystack:
+                continue
+        out.append(txn)
+    return out
+
+
+def _split_csv_or_repeat(values: list[str] | None) -> set[str]:
+    """Accept ?store=A&store=B OR ?store=A,B — both produce {"A","B"}."""
+    out: set[str] = set()
+    for v in values or []:
+        for piece in str(v).split(","):
+            piece = piece.strip()
+            if piece:
+                out.add(piece)
+    return out
+
+
 @app.get("/api/transactions")
-async def list_transactions():
-    return await asyncio.to_thread(_build_transactions_response)
+async def list_transactions(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+    risk: list[str] | None = Query(default=None),
+    store: list[str] | None = Query(default=None),
+    payment: list[str] | None = Query(default=None),
+    rule: list[str] | None = Query(default=None),
+    search: str | None = Query(default=None),
+    limit: int | None = Query(default=None, ge=1, le=10000),
+    offset: int = Query(default=0, ge=0),
+):
+    """BRD §13 filters. All params optional — no params = full list (back-compat).
+
+    - `from`/`to`: ISO 8601 (with or without Z); naive treated as IST.
+    - `risk`: repeatable or comma-separated; values High/Medium/Low.
+    - `store`: repeatable or comma-separated CINs (multi-store selection).
+    - `payment`: repeatable; matches PaymentLine.line_attribute (Cash/UPI/CreditCard/CreditNotePayment/...).
+    - `rule`: repeatable; matches triggered_rules entries (e.g. "8_manual_entry").
+    - `search`: substring match on store, cashier, bill number, terminal.
+    - `limit`/`offset`: pagination (limit unset = no cap).
+    """
+    def _build() -> dict:
+        from_dt = _parse_dt(from_) if from_ else None
+        to_dt = _parse_dt(to) if to else None
+        if from_dt and from_dt.tzinfo is None:
+            from_dt = from_dt.replace(tzinfo=timezone.utc)
+        if to_dt and to_dt.tzinfo is None:
+            to_dt = to_dt.replace(tzinfo=timezone.utc)
+
+        all_txns = _sort_transactions(_load_transactions())
+        filtered = _filter_transactions(
+            all_txns,
+            from_dt=from_dt,
+            to_dt=to_dt,
+            risks=_split_csv_or_repeat(risk),
+            stores=_split_csv_or_repeat(store),
+            payment_modes=_split_csv_or_repeat(payment),
+            rule_ids=_split_csv_or_repeat(rule),
+            search=search or "",
+        )
+        total = len(filtered)
+        if limit is not None:
+            filtered = filtered[offset:offset + limit]
+        elif offset:
+            filtered = filtered[offset:]
+
+        repaired = [
+            _repair_transaction_media(txn)[0] if _needs_transaction_repair(txn) else txn
+            for txn in filtered
+        ]
+        serialized = [serialize_transaction(txn, deps.config) for txn in repaired]
+        bills_map = {txn.id: build_bill_data(txn) for txn in repaired}
+        return {
+            "transactions": serialized,
+            "bills_map": bills_map,
+            "count": len(serialized),
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+        }
+
+    return await asyncio.to_thread(_build)
 
 
 def _build_transaction_detail(txn_id: str) -> dict | None:
@@ -769,14 +883,93 @@ async def get_transaction_video(txn_id: str, request: Request):
     return _range_video_response(snippet_path, request, f"{txn_id}.mp4")
 
 
-def _build_alerts_response() -> list[dict]:
+def _build_alerts_response(
+    *,
+    from_dt: datetime | None = None,
+    to_dt: datetime | None = None,
+    statuses: set[str] | None = None,
+    stores: set[str] | None = None,
+    risks: set[str] | None = None,
+    rule_ids: set[str] | None = None,
+    include_manual_bill: bool = True,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict:
     alerts = _sort_alerts(_load_alerts())
-    return [_serialize_alert(alert) for alert in alerts]
+    filtered = []
+    for alert in alerts:
+        ts = alert.timestamp if isinstance(alert.timestamp, datetime) else _parse_dt(str(alert.timestamp or ""))
+        if ts and ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if from_dt and ts and ts < from_dt:
+            continue
+        if to_dt and ts and ts > to_dt:
+            continue
+        if statuses and (alert.status or "new") not in statuses:
+            continue
+        if stores and alert.store_id not in stores:
+            continue
+        if risks and (alert.risk_level or "Medium") not in risks:
+            continue
+        if rule_ids and not (set(alert.triggered_rules) & rule_ids):
+            continue
+        if not include_manual_bill and getattr(alert, "manual_bill", False):
+            continue
+        filtered.append(alert)
+    total = len(filtered)
+    if limit is not None:
+        filtered = filtered[offset:offset + limit]
+    elif offset:
+        filtered = filtered[offset:]
+    return {
+        "alerts": [_serialize_alert(a) for a in filtered],
+        "count": len(filtered),
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+    }
 
 
 @app.get("/api/alerts")
-async def list_alerts():
-    return await asyncio.to_thread(_build_alerts_response)
+async def list_alerts(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+    status: list[str] | None = Query(default=None),
+    store: list[str] | None = Query(default=None),
+    risk: list[str] | None = Query(default=None),
+    rule: list[str] | None = Query(default=None),
+    include_manual_bill: bool = Query(default=True),
+    limit: int | None = Query(default=None, ge=1, le=10000),
+    offset: int = Query(default=0, ge=0),
+):
+    """BRD §13 alert filters. All params optional. Pass `include_manual_bill=false`
+    to hide alerts that the operator marked as legitimate paper bills (BRD 13.h).
+    Legacy callers passing no params get the full list as a flat array for
+    backward compatibility."""
+    from_dt = _parse_dt(from_) if from_ else None
+    to_dt = _parse_dt(to) if to else None
+    if from_dt and from_dt.tzinfo is None:
+        from_dt = from_dt.replace(tzinfo=timezone.utc)
+    if to_dt and to_dt.tzinfo is None:
+        to_dt = to_dt.replace(tzinfo=timezone.utc)
+
+    no_filters = not any([from_, to, status, store, risk, rule, limit, offset]) and include_manual_bill
+    payload = await asyncio.to_thread(
+        _build_alerts_response,
+        from_dt=from_dt,
+        to_dt=to_dt,
+        statuses=_split_csv_or_repeat(status),
+        stores=_split_csv_or_repeat(store),
+        risks=_split_csv_or_repeat(risk),
+        rule_ids=_split_csv_or_repeat(rule),
+        include_manual_bill=include_manual_bill,
+        limit=limit,
+        offset=offset,
+    )
+    # Back-compat: callers without filters expect a flat list, not the wrapped object.
+    if no_filters:
+        return payload["alerts"]
+    return payload
 
 
 def _resolve_alert_clip(alert_id: str) -> tuple[str, str]:
@@ -807,19 +1000,29 @@ async def get_alert_video(alert_id: str, request: Request):
 
 
 @app.post("/api/alerts/{alert_id}/resolve")
-async def resolve_alert(alert_id: str, status: str = Query(...), remarks: str = Query(default="")):
+async def resolve_alert(
+    alert_id: str,
+    status: str = Query(...),
+    remarks: str = Query(default=""),
+    manual_bill: bool = Query(default=False),
+):
     alert = _find_alert(alert_id)
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
-    _save_alert_updates(
-        alert_id,
-        {
-            "status": status,
-            "remarks": remarks,
-            "resolved_at": datetime.now(timezone.utc).isoformat(),
-        },
+    updates = {
+        "status": status,
+        "remarks": remarks,
+        "resolved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if manual_bill:
+        # Sticky once set — operator marked the underlying transaction as a
+        # legitimate paper bill so it stops surfacing under "EPOS not touched".
+        updates["manual_bill"] = True
+    _save_alert_updates(alert_id, updates)
+    await deps.ws_manager.broadcast(
+        "ALERT_UPDATED",
+        {"id": alert_id, "status": status, "remarks": remarks, "manual_bill": manual_bill},
     )
-    await deps.ws_manager.broadcast("ALERT_UPDATED", {"id": alert_id, "status": status, "remarks": remarks})
     return {"ok": True}
 
 

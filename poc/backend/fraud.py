@@ -259,6 +259,26 @@ class FraudEngine:
             return
         self._trigger(txn, "29_bill_not_generated")
 
+    def _rule_30_refund_no_receipt(self, txn: TransactionSession) -> None:
+        """BRD 12.ii.c — Refund without Receipt.
+
+        A return-typed sale line on a transaction whose bill-zone CV signal
+        showed no printer activity. Distinct from rule 29 (bill not
+        generated) which fires on ANY committed transaction without bill
+        evidence; this one specifically targets returns/refunds where the
+        absence of a printed receipt is the fraud signal — the canonical
+        'manufactured return, no slip given to customer' pattern.
+        """
+        if not any(i.item_attribute == "ReturnItem" for i in txn.items):
+            return
+        if txn.cv_receipt_detected is not False:
+            return
+        if txn.cv_confidence != "HIGH":
+            return
+        if not self._has_bill_zone_coverage(txn):
+            return
+        self._trigger(txn, "30_refund_no_receipt")
+
     # ------------------------------------------------------------------
     # Main evaluate method
     # ------------------------------------------------------------------
@@ -289,6 +309,7 @@ class FraudEngine:
         ("27_return_no_customer", "_rule_27_return_no_customer"),
         ("28_drawer_no_customer", "_rule_28_drawer_no_customer"),
         ("29_bill_not_generated", "_rule_29_bill_not_generated"),
+        ("30_refund_no_receipt", "_rule_30_refund_no_receipt"),
     ]
 
     def evaluate(self, txn: TransactionSession) -> list[Alert]:

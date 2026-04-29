@@ -105,6 +105,9 @@
         },
         "29_bill_not_generated": {
             "enabled": true
+        },
+        "30_refund_no_receipt": {
+            "enabled": true
         }
     },
     "activity_heartbeat_seconds": 60,
