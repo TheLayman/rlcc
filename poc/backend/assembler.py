@@ -21,6 +21,20 @@ def _truthy(value) -> bool:
     return False
 
 
+def _normalize_outside_hours(value) -> str:
+    """Coerce outsideOpeningHours into the spec §6.1 enum string.
+
+    Live-prod Nukkad mixes bool `false` and the enum string `"InsideOpeningHours"`
+    on the same field across different Begin events. We canonicalise to the
+    enum form so rule 20 (outside-hours) compares cleanly.
+    """
+    if isinstance(value, bool):
+        return "OutsideOpeningHours" if value else "InsideOpeningHours"
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return "InsideOpeningHours"
+
+
 class TransactionAssembler:
     def __init__(self, timeout_seconds: int = 1800):
         self.sessions: dict[str, TransactionSession] = {}
@@ -49,7 +63,7 @@ class TransactionAssembler:
             debitor=payload.get("debitor", ""),
             transaction_type=payload.get("transactionType", "CompletedNormally"),
             employee_purchase=_truthy(payload.get("employeePurchase", False)),
-            outside_opening_hours=payload.get("outsideOpeningHours", "InsideOpeningHours"),
+            outside_opening_hours=_normalize_outside_hours(payload.get("outsideOpeningHours")),
             started_at=payload.get("transactionTimeStamp"),
             last_event_at=payload.get("transactionTimeStamp"),
             source="push_assembled",
