@@ -89,6 +89,7 @@ class CameraState:
     activity_last_label: dict[str, str] = field(default_factory=dict)
     fps_samples: deque = field(default_factory=lambda: deque(maxlen=20))
     current_fps: float = 0.0
+    fps_starved_logged: bool = False  # per-camera latch so the starvation warning isn't spammed
     consecutive_read_failures: int = 0
     last_reconnect_at: datetime | None = None
     reconnect_count: int = 0
@@ -163,8 +164,27 @@ class CVRuntime:
     def cameras(self) -> list[dict]:
         with self.lock:
             target_fps = self._rule("cv_target_fps", 5.0)
-            return [
-                {
+            rows = []
+            for state in self.states.values():
+                starved = state.current_fps > 0 and state.current_fps < target_fps * 0.6
+                # Edge-trigger logging: warn once when a camera enters starvation,
+                # info once when it recovers. Avoids spamming at every health poll.
+                if starved and not state.fps_starved_logged:
+                    print(
+                        f"[cv] WARN camera {state.camera.camera_id} fps_starved: "
+                        f"current={state.current_fps:.1f} target={target_fps:.1f} "
+                        f"(YOLO/RTSP backpressure)",
+                        flush=True,
+                    )
+                    state.fps_starved_logged = True
+                elif not starved and state.fps_starved_logged and state.current_fps > 0:
+                    print(
+                        f"[cv] INFO camera {state.camera.camera_id} fps recovered: "
+                        f"current={state.current_fps:.1f} target={target_fps:.1f}",
+                        flush=True,
+                    )
+                    state.fps_starved_logged = False
+                rows.append({
                     "camera_id": state.camera.camera_id,
                     "store_id": state.camera.store_id,
                     "pos_terminal_no": state.camera.pos_terminal_no,
@@ -176,13 +196,12 @@ class CVRuntime:
                     "current_fps": state.current_fps,
                     "target_fps": target_fps,
                     "frame_count": state.frame_count,
-                    "fps_starved": state.current_fps > 0 and state.current_fps < target_fps * 0.6,
+                    "fps_starved": starved,
                     "reconnect_count": state.reconnect_count,
                     "consecutive_read_failures": state.consecutive_read_failures,
                     "last_reconnect_at": state.last_reconnect_at.isoformat() if state.last_reconnect_at else None,
-                }
-                for state in self.states.values()
-            ]
+                })
+            return rows
 
     def get_state(self, camera_id: str | None = None) -> CameraState:
         with self.lock:
@@ -488,6 +507,10 @@ class CVRuntime:
                 held_non_seller_count = 1
                 non_seller_held = True
 
+        # `non_seller_held` was previously emitted but no consumer reads it —
+        # the held-count logic is already baked into `non_seller_count` /
+        # `non_seller_present` above. Dropped to keep the wire schema in sync
+        # with CV_PIPELINE.md and INTEGRATION.md §3.
         return {
             "ts": iso_now(),
             "store_id": camera.store_id,
@@ -495,7 +518,6 @@ class CVRuntime:
             "zones": zones_payload,
             "non_seller_count": held_non_seller_count,
             "non_seller_present": held_non_seller_count > 0,
-            "non_seller_held": non_seller_held,
         }
 
     def _bill_zone_status(
@@ -570,8 +592,13 @@ class CVRuntime:
             return
 
         trigger_seconds = self._rule("activity_trigger_seconds", 15.0)
-        activity_fps = max(self._rule("activity_fps", 2.0), 0.5)
+        # Default 1.0 Hz — was 2.0 which produced 120 events/min/zone under
+        # continuous copresence with no real benefit. Heartbeat republishes
+        # an unchanged label at most every `activity_heartbeat_seconds` so
+        # idle→idle→idle collapses to a single event plus periodic ping.
+        activity_fps = max(self._rule("activity_fps", 1.0), 0.5)
         activity_interval = 1.0 / activity_fps
+        heartbeat_seconds = max(self._rule("activity_heartbeat_seconds", 60.0), activity_interval)
         now = datetime.now(timezone.utc)
 
         zone_signal_by_id = {entry["pos_zone"]: entry for entry in signal.get("zones", [])}
@@ -600,6 +627,18 @@ class CVRuntime:
                 continue
 
             label, confidence = self.activity_classifier.classify(frame, seller_bbox, zone)
+
+            # Skip publishing a duplicate label unless the heartbeat window has
+            # elapsed. Keeps idle/idle/idle from spamming the dashboard while
+            # still emitting a periodic "still seeing this label" signal.
+            previous_label = state.activity_last_label.get(zone.zone_id)
+            since_last = (
+                (now - last_published).total_seconds() if last_published is not None else float("inf")
+            )
+            if previous_label == label and since_last < heartbeat_seconds:
+                state.activity_last_published_at[zone.zone_id] = now
+                continue
+
             state.activity_last_published_at[zone.zone_id] = now
             state.activity_last_label[zone.zone_id] = label
 
