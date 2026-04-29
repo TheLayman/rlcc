@@ -363,6 +363,30 @@ for _path, _event in ROUTES:
     router.add_api_route(_path, _make_handler(_event), methods=["POST"])
 
 
+@router.post("/v1/rlcc/{rest:path}")
+async def unknown_rlcc_path(rest: str, request: Request):
+    """Catch-all for unrecognised /v1/rlcc/* POSTs.
+
+    Nukkad's POS has been observed POSTing to `/v1/rlcc/undefined` when their
+    client-side event-name resolution fails (likely a missing case for
+    `BeginTransactionWithTillLookup`). The traffic-log middleware in main.py
+    captures the body so we can identify what they meant to send; this handler
+    just returns a structured 404 so they see a clean spec-shaped error.
+    """
+    return JSONResponse(
+        status_code=404,
+        content={
+            "status": 404,
+            "message": "Failure",
+            "data": {
+                "ErrorCode": "404",
+                "ErrorDescription": f"Unknown RLCC event path: /v1/rlcc/{rest}",
+                "Succeeded": "false",
+            },
+        },
+    )
+
+
 _CONTRACT_SAMPLES: dict[str, dict] = {
     "BeginTransactionWithTillLookup": {
         "event": "BeginTransactionWithTillLookup",

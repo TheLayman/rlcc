@@ -489,6 +489,71 @@ async def _receiver_rate_limit(request: Request, call_next):
         _receiver_rate_window.append(now)
     return await call_next(request)
 
+
+# Wrap every /v1/rlcc/* request with structured request/response logging so we
+# can replay what Nukkad sent and what we said back. Registered AFTER the rate
+# limiter so it sits outermost and captures 429s + catch-all 404s too.
+import uuid as _uuid
+from backend.api_logger import log_event as _log_event
+
+_LOG_BODY_CAP = 4 * 1024
+
+
+def _safe_decode(b: bytes) -> str:
+    try:
+        return b.decode("utf-8", errors="replace")
+    except Exception:
+        return f"<{len(b)} bytes, undecodable>"
+
+
+@app.middleware("http")
+async def _rlcc_traffic_log(request: Request, call_next):
+    if not request.url.path.startswith(_RECEIVER_PATH_PREFIX):
+        return await call_next(request)
+
+    request_id = _uuid.uuid4().hex[:12]
+    body_bytes = await request.body()
+
+    async def _replay():
+        return {"type": "http.request", "body": body_bytes, "more_body": False}
+    request._receive = _replay  # type: ignore[attr-defined]
+
+    headers = {k: ("<redacted>" if k.lower() == "x-authorization-key" else v) for k, v in request.headers.items()}
+    _log_event(
+        "in",
+        request_id=request_id,
+        method=request.method,
+        path=request.url.path,
+        client=request.client.host if request.client else "",
+        headers=headers,
+        body=_safe_decode(body_bytes)[:_LOG_BODY_CAP],
+    )
+
+    started = time.monotonic()
+    response = await call_next(request)
+
+    body_chunks: list[bytes] = []
+    async for chunk in response.body_iterator:
+        body_chunks.append(chunk)
+    response_body = b"".join(body_chunks)
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+
+    _log_event(
+        "out",
+        request_id=request_id,
+        path=request.url.path,
+        status=response.status_code,
+        elapsed_ms=elapsed_ms,
+        body=_safe_decode(response_body)[:_LOG_BODY_CAP],
+    )
+
+    return Response(
+        content=response_body,
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        media_type=response.media_type,
+    )
+
 from backend.camera_api import router as camera_router
 from backend.receiver import router as receiver_router
 
