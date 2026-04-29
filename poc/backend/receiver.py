@@ -214,6 +214,14 @@ def _persist_committed_transaction(txn: TransactionSession, alerts: list[Alert])
 _VERIFY_HEADER = "x-rlcc-verify"  # set by poc/scripts/verify_push_endpoints.py
 
 
+# Nukkad's live-prod POS sometimes sends shorter event names than the spec.
+# Map their dialect → canonical spec name so the route's mismatch check
+# accepts them. Add new aliases here as they're observed in api.jsonl.
+_EVENT_ALIASES: dict[str, str] = {
+    "BeginTransaction": "BeginTransactionWithTillLookup",
+}
+
+
 async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
     expected_key = deps.settings.push_auth_key
     provided_key = request.headers.get("x-authorization-key", "")
@@ -224,13 +232,25 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
     if error:
         return JSONResponse(status_code=400, content={"message": error})
 
+    # Tolerate Nukkad's known shorter aliases for spec event names. Their
+    # live-prod POS sends `event: "BeginTransaction"` on the
+    # /v1/rlcc/begin-transaction-with-till-lookup route, even though spec
+    # §4.1 says the value should be `BeginTransactionWithTillLookup`.
+    # Without this map every transaction was being rejected at the very
+    # first event, dropping the session, the sale lines that followed, and
+    # the commit. Add other aliases here if more dialect mismatches surface.
     body_event = payload.get("event", "")
+    if body_event:
+        body_event = _EVENT_ALIASES.get(body_event, body_event)
     if body_event and body_event != expected_event:
         return JSONResponse(
             status_code=400,
-            content={"message": f"event mismatch: route expects {expected_event}, payload says {body_event}"},
+            content={"message": f"event mismatch: route expects {expected_event}, payload says {payload.get('event', '')}"},
         )
-    payload.setdefault("event", expected_event)
+    # Normalize the in-memory payload so downstream code (assembler, storage,
+    # dedup-key) all see the canonical spec name regardless of which form
+    # arrived on the wire.
+    payload["event"] = expected_event
 
     # Verify-script traffic must NOT mutate any persistent state (events log,
     # transactions.jsonl, alerts.jsonl, video snippets) or push to the dashboard
