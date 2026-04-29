@@ -32,7 +32,12 @@ class TransactionAssembler:
         session_id = payload.get("transactionSessionId") or ""
         if not session_id:
             raise ValueError("missing transactionSessionId")
-        store_id = payload.get("storeIdentifier", "")
+        # Nukkad sends the store CIN (NDCIN.../NSCIN...) in `branch`;
+        # `storeIdentifier` is a Mongo ObjectId in live-prod. Capture branch as
+        # the canonical store_id on the session — every downstream event
+        # (Sale/Payment/Total/Commit) only carries the ObjectId, so we resolve
+        # those back to CIN by looking up this session (see receiver._canonical_store_id).
+        store_id = (payload.get("branch") or payload.get("storeIdentifier") or "").strip()
         pos_terminal_no = payload.get("posTerminalNo", "")
         txn = TransactionSession(
             id=session_id,

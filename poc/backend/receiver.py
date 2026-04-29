@@ -114,6 +114,23 @@ def _camera_for(store_id: str, pos_terminal_no: str):
     return deps.config.get_camera_by_terminal(store_id, pos_terminal_no)
 
 
+def _camera_for_payload(store_id: str, payload: dict):
+    """Resolve a camera, trying posTerminalNo then tillDescription.
+
+    Per Nukkad: the POS identifier can land in either field — `posTerminalNo`
+    on transactional events, often `tillDescription` on GetTill / BillReprint
+    (and they may carry different forms — "383" vs "POS 1" — for the same
+    till). Camera matching honours `nukkad_pos_aliases` on each camera entry,
+    so both forms resolve as long as the alias is configured.
+    """
+    for candidate in (payload.get("posTerminalNo"), payload.get("tillDescription")):
+        if candidate:
+            cam = deps.config.get_camera_by_terminal(store_id, candidate)
+            if cam:
+                return cam
+    return None
+
+
 def _hydrate_transaction(txn: TransactionSession) -> TransactionSession:
     txn.store_name = txn.store_name or deps.config.get_store_name(txn.store_id)
     camera = _camera_for(txn.store_id, txn.pos_terminal_no)
@@ -153,6 +170,33 @@ def _extract_event_clip(*, clip_id: str, store_id: str, pos_terminal_no: str, at
         ),
         camera.camera_id,
     )
+
+
+def _canonical_store_id(payload: dict) -> str:
+    """Resolve the store CIN from any push payload.
+
+    Nukkad's live-prod feed sends the CIN (NDCIN.../NSCIN...) in `branch`,
+    but only on events that have one in the spec (Begin, GetTill, BillReprint).
+    Sale, Payment, Total, Commit, and AddTransactionEvent only carry
+    `storeIdentifier`, which in live-prod is a Mongo ObjectId — useless for
+    looking anything up in our config.
+
+    Resolution order:
+      1. `branch` if present (already CIN)
+      2. fallback to the assembler session created at Begin — its store_id
+         was set from `branch` and is the CIN
+      3. last resort: whatever's in `storeIdentifier` (probably an ObjectId,
+         won't match config but keeps us from logging the empty string)
+    """
+    branch = (payload.get("branch") or "").strip()
+    if branch:
+        return branch
+    session_id = payload.get("transactionSessionId") or ""
+    if session_id:
+        session = deps.assembler.sessions.get(session_id)
+        if session and session.store_id:
+            return session.store_id
+    return (payload.get("storeIdentifier") or "").strip()
 
 
 async def _broadcast_raw_pos() -> None:
@@ -223,7 +267,9 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
         # for verify so the duplicate_event scenario still works.
         deps.storage.mark_seen(payload)
 
-    store_id = payload.get("storeIdentifier", "")
+    # Always work in CIN — branch (when present) or session-resolved CIN.
+    # See _canonical_store_id for why payload.storeIdentifier alone isn't enough.
+    store_id = _canonical_store_id(payload)
     pos_terminal_no = payload.get("posTerminalNo", "")
     cashier_id = payload.get("cashier", "")
 
@@ -263,10 +309,8 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
             # don't fire until we hand back a Till), so this MUST always
             # succeed. The Till is reused by Nukkad in downstream calls — see
             # _assign_till for the per-(branch, terminal) derivation.
-            till = _assign_till(
-                payload.get("branch") or store_id,
-                payload.get("posTerminalNo", ""),
-            )
+            # store_id is already the CIN form (set above via _canonical_store_id).
+            till = _assign_till(store_id, payload.get("posTerminalNo", ""))
             if not is_verify:
                 await _broadcast_raw_pos()
             return {
@@ -326,11 +370,14 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
                     _parse_ts_or_ms(payload.get("transactionTimestamp"))
                     or _parse_ts_or_ms(payload.get("transactionTimeStamp"))
                 )
+                # BillReprint may carry the POS id in tillDescription instead of
+                # posTerminalNo. Resolve via _camera_for_payload (tries both).
+                reprint_camera = _camera_for_payload(store_id, payload)
                 clip_path, camera_id = await asyncio.to_thread(
                     _extract_event_clip,
                     clip_id=f"bill-reprint-{bill_number or 'unknown'}",
                     store_id=store_id,
-                    pos_terminal_no=pos_terminal_no,
+                    pos_terminal_no=(reprint_camera.pos_terminal_no if reprint_camera else pos_terminal_no),
                     at=event_ts,
                 )
                 alert = Alert(

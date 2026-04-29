@@ -70,6 +70,11 @@ class CameraEntry:
     pos_zones: list[PosZoneConfig]
     enabled: bool = True
     match_any_pos_in_store: bool = False
+    # Alternate POS labels Nukkad's POS sends for this same physical till.
+    # Live-prod sometimes sends a numeric terminal id (e.g. "383") on
+    # Sale/Payment/Total/Commit and the human label "POS 1" on GetTill.
+    # List every value Nukkad might use here so all lookups resolve.
+    nukkad_pos_aliases: list[str] = field(default_factory=list)
 
     @property
     def normalized_terminal(self) -> str:
@@ -80,7 +85,14 @@ class CameraEntry:
         return self.seller_window_id or build_seller_window_id(self.store_id, self.pos_terminal_no)
 
     def matches_terminal(self, store_id: str, pos_terminal_no: str) -> bool:
-        return self.store_id == store_id and self.normalized_terminal == normalize_terminal(pos_terminal_no)
+        if self.store_id != store_id:
+            return False
+        needle = normalize_terminal(pos_terminal_no)
+        if not needle:
+            return False
+        if self.normalized_terminal == needle:
+            return True
+        return any(normalize_terminal(a) == needle for a in self.nukkad_pos_aliases)
 
 
 @dataclass
@@ -158,6 +170,9 @@ class Config:
                 for z in c.get("zones", {}).get("pos_zones", [])
             ]
 
+            raw_aliases = c.get("nukkad_pos_aliases") or []
+            aliases = [str(a).strip() for a in raw_aliases if str(a).strip()]
+
             loaded.append(
                 CameraEntry(
                     seller_window_id=seller_window_id,
@@ -171,6 +186,7 @@ class Config:
                     pos_zones=zones,
                     enabled=bool(c.get("enabled", True)),
                     match_any_pos_in_store=bool(c.get("match_any_pos_in_store", False)),
+                    nukkad_pos_aliases=aliases,
                 )
             )
 
