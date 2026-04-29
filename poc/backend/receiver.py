@@ -89,26 +89,24 @@ def _parse_ts_or_ms(value) -> datetime | None:
     return None
 
 
-def _resolve_till(store_id: str, till_description: str) -> str:
-    """Look up a till identifier from camera_mapping for a (store, tillDescription).
+import hashlib
 
-    Returns the matched POS terminal number (echoed as the till), or "" if
-    nothing matches. We match `tillDescription` against either
-    `display_pos_label` or `pos_terminal_no` since real configs use both.
+
+def _assign_till(store_id: str, pos_terminal_no: str, till_description: str) -> str:
+    """Assign a numeric Till for a (store, terminal) pair.
+
+    Prefer digits already present in posTerminalNo / tillDescription so a
+    human-readable input like "POS 3" yields "3" — Nukkad's POS reuses this
+    Till value across subsequent calls so it should be stable and recognisable.
+    Falls back to a stable hash of (store, terminal) when no digits are present
+    (e.g. inputs like "Counter A").
     """
-    if not store_id or not till_description:
-        return ""
-    needle = till_description.strip().lower()
-    for camera in deps.config.cameras:
-        if camera.store_id != store_id:
-            continue
-        candidates = (
-            (camera.display_pos_label or "").strip().lower(),
-            (camera.pos_terminal_no or "").strip().lower(),
-        )
-        if needle in candidates:
-            return camera.pos_terminal_no or camera.display_pos_label
-    return ""
+    for source in (pos_terminal_no, till_description):
+        digits = "".join(ch for ch in (source or "") if ch.isdigit())
+        if digits:
+            return digits
+    blob = f"{store_id}|{pos_terminal_no}|{till_description}".encode("utf-8")
+    return str(int(hashlib.md5(blob).hexdigest()[:4], 16) % 10000)
 
 
 def _camera_for(store_id: str, pos_terminal_no: str):
@@ -244,26 +242,22 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
             deps.assembler.add_event(payload)
 
         elif expected_event == "GetTill":
-            till = _resolve_till(store_id, payload.get("tillDescription", ""))
-            await _broadcast_raw_pos()
-            if till:
-                return {
-                    "status": 200,
-                    "message": "Success",
-                    "data": {"ErrorCode": "-1", "Succeeded": "true", "Till": till},
-                }
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "status": 400,
-                    "message": "Failure",
-                    "data": {
-                        "ErrorCode": "11",
-                        "ErrorDescription": "No Till found with the specified Branch and Description.",
-                        "Succeeded": "false",
-                    },
-                },
+            # GetTill is a till-assignment RPC: Nukkad's POS gates the entire
+            # transaction flow on a successful response (Begin/Sale/Commit
+            # don't fire until we hand back a Till), so this MUST always
+            # succeed. The Till is reused by Nukkad in downstream calls — see
+            # _assign_till for the (deterministic, numeric) derivation.
+            till = _assign_till(
+                store_id,
+                payload.get("posTerminalNo", ""),
+                payload.get("tillDescription", ""),
             )
+            await _broadcast_raw_pos()
+            return {
+                "status": 200,
+                "message": "Success",
+                "data": {"ErrorCode": "-1", "Succeeded": "true", "Till": till},
+            }
 
         elif expected_event == "CommitTransaction":
             txn = deps.assembler.commit(payload)

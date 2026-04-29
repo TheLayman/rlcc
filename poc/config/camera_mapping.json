@@ -365,5 +365,29 @@
         }
       ]
     }
+  },
+  {
+    "seller_window_id": "NSCIN10489_POS1",
+    "store_id": "NSCIN10489",
+    "pos_terminal_no": "POS 1",
+    "display_pos_label": "POS 1",
+    "camera_id": "cam-killer-jeans-01",
+    "rtsp_url": "rtsp://10.86.157.88/media/video1",
+    "xprotect_device_id": "",
+    "multi_pos": false,
+    "enabled": true,
+    "zones": {
+      "pos_zones": [
+        {
+          "zone_id": "POS1",
+          "seller_zone": [],
+          "customer_zone": [],
+          "midline": [],
+          "pos_zone": [],
+          "pos_screen_zone": [],
+          "bill_zone": []
+        }
+      ]
+    }
   }
 ]

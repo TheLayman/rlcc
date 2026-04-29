@@ -420,14 +420,17 @@ def _split_tender(sid: str) -> list[Step]:
     ]
 
 
-def _get_till_unknown(sid: str) -> list[Step]:
-    # VERIFY-STORE has no camera in camera_mapping.json, so the lookup must
-    # return the spec error envelope (ErrorCode 11, "No Till found...").
+def _get_till_assigns(sid: str) -> list[Step]:
+    # GetTill is a till-assignment RPC: Nukkad's POS gates the entire
+    # transaction flow on a successful response (Begin/Sale/Commit don't fire
+    # until we hand back a Till). So GetTill MUST always succeed, including
+    # for out-of-scope stores. The Till value Nukkad reuses downstream is
+    # numeric — we derive it deterministically from posTerminalNo digits.
     return [
-        Step("GetTill (unknown store → 400 + ErrorCode 11)",
-             PATH_FOR["GetTill"], get_till_payload(), 400,
-             expect_message_contains="Failure",
-             expect_data_keys=("ErrorCode", "ErrorDescription", "Succeeded")),
+        Step("GetTill (POS 1) → numeric Till",
+             PATH_FOR["GetTill"], get_till_payload(), 200,
+             expect_message_contains="Success",
+             expect_data_keys=("ErrorCode", "Succeeded", "Till")),
     ]
 
 
@@ -456,7 +459,7 @@ SCENARIOS: list[Scenario] = [
     Scenario("empty_transaction", "Empty transaction",                   "Begin then Commit with no sale lines", _empty_transaction),
     Scenario("fractional_qty",    "Fractional itemQuantity (1.250 kg)",  "Real grocery POS sends decimal kg quantities", _fractional_qty),
     Scenario("stringified_bool",  "Stringified bool flags",              "employeePurchase=\"false\" must not flip to True", _stringified_bool),
-    Scenario("get_till_unknown",  "GetTill against unknown store",       "Must return 400 + ErrorCode 11 envelope", _get_till_unknown),
+    Scenario("get_till_assigns",  "GetTill assigns a Till",              "Must always succeed — Nukkad's POS gates the whole transaction flow on this", _get_till_assigns),
     Scenario("bill_reprint",      "BillReprint standalone",              "Reprint event (spec keys: billNumber + Long-ms transactionTimestamp)", _bill_reprint),
     Scenario("duplicate_event",   "Duplicate-event dedupe",              "Same Begin twice — second is dropped as duplicate", _duplicate_event),
     Scenario("commit_no_begin",   "Commit without prior Begin",          "Should 400, not 500", _commit_without_begin),
