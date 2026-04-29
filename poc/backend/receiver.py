@@ -182,6 +182,9 @@ def _persist_committed_transaction(txn: TransactionSession, alerts: list[Alert])
     return True
 
 
+_VERIFY_HEADER = "x-rlcc-verify"  # set by poc/scripts/verify_push_endpoints.py
+
+
 async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
     expected_key = deps.settings.push_auth_key
     provided_key = request.headers.get("x-authorization-key", "")
@@ -200,26 +203,38 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
         )
     payload.setdefault("event", expected_event)
 
+    # Verify-script traffic must NOT mutate any persistent state (events log,
+    # transactions.jsonl, alerts.jsonl, video snippets) or push to the dashboard
+    # WebSocket. The assembler's in-memory state is fine to mutate so scenarios
+    # like duplicate_event / commit_no_begin still test real behavior — only the
+    # write-side and broadcast-side calls are gated.
+    is_verify = bool(request.headers.get(_VERIFY_HEADER))
+
     # GetTill is an idempotent query, not a stateful event — skip dedup so
     # repeated lookups (which all share an empty dedup key) don't get suppressed.
     if expected_event != "GetTill":
         if deps.storage.is_duplicate(payload):
-            await _broadcast_raw_pos()
+            if not is_verify:
+                await _broadcast_raw_pos()
             return {"status": 200, "message": "duplicate, ignored"}
-        deps.storage.append_event(payload)
+        if not is_verify:
+            deps.storage.append_event(payload)
+        # mark_seen tracks an in-memory dedup set (no disk write) — keep it on
+        # for verify so the duplicate_event scenario still works.
         deps.storage.mark_seen(payload)
 
     store_id = payload.get("storeIdentifier", "")
     pos_terminal_no = payload.get("posTerminalNo", "")
     cashier_id = payload.get("cashier", "")
 
-    if store_id:
+    if store_id and not is_verify:
         deps.fraud_engine.record_nukkad_event(store_id)
 
     try:
         if expected_event == "BeginTransactionWithTillLookup":
             deps.assembler.begin(payload)
-            await _broadcast_raw_pos()
+            if not is_verify:
+                await _broadcast_raw_pos()
             return {
                 "status": 200,
                 "message": "Success",
@@ -252,7 +267,8 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
                 payload.get("branch") or store_id,
                 payload.get("posTerminalNo", ""),
             )
-            await _broadcast_raw_pos()
+            if not is_verify:
+                await _broadcast_raw_pos()
             return {
                 "status": 200,
                 "message": "Success",
@@ -261,7 +277,11 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
 
         elif expected_event == "CommitTransaction":
             txn = deps.assembler.commit(payload)
-            if txn:
+            if txn and not is_verify:
+                # Verify mode skips this whole tail: no CV correlation, no clip
+                # extraction (would write to data/snippets/), no fraud eval, no
+                # persistence to transactions.jsonl/alerts.jsonl, no broadcasts.
+                # commit() above already cleaned up the in-memory session.
                 txn = _hydrate_transaction(txn)
                 txn = correlate(txn, deps.cv_consumer, deps.config)
                 txn.snippet_path = await asyncio.to_thread(_extract_transaction_clip, txn)
@@ -279,12 +299,13 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
                     await deps.ws_manager.broadcast("NEW_TRANSACTION", serialize_transaction(txn, deps.config))
                     for alert in alerts:
                         await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
-            else:
+            elif not txn:
                 # Unknown session — likely a stray retry or a Commit that arrived
                 # after we restarted and lost the session. Don't 400 (Nukkad's queue
                 # would keep retrying); ack with a distinguishing message so the
                 # caller can tell the no-op case apart from a real commit.
-                await _broadcast_raw_pos()
+                if not is_verify:
+                    await _broadcast_raw_pos()
                 return {
                     "status": 200,
                     "message": "no session matched, ignored",
@@ -293,49 +314,49 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
                 }
 
         elif expected_event == "BillReprint":
-            # Spec §4.9 uses `billNumber` and `transactionTimestamp` (Long ms).
-            # Earlier code read `transactionNumber` and ISO-only timestamps —
-            # tolerate both shapes so we don't lose data if Nukkad's payload
-            # casing varies.
-            bill_number = (
-                payload.get("billNumber")
-                or payload.get("transactionNumber")
-                or ""
-            )
-            event_ts = (
-                _parse_ts_or_ms(payload.get("transactionTimestamp"))
-                or _parse_ts_or_ms(payload.get("transactionTimeStamp"))
-            )
-            clip_path, camera_id = await asyncio.to_thread(
-                _extract_event_clip,
-                clip_id=f"bill-reprint-{bill_number or 'unknown'}",
-                store_id=store_id,
-                pos_terminal_no=pos_terminal_no,
-                at=event_ts,
-            )
-            alert = Alert(
-                transaction_id=bill_number,
-                store_id=store_id,
-                store_name=deps.config.get_store_name(store_id),
-                pos_terminal_no=pos_terminal_no,
-                display_pos_label=pos_terminal_no,
-                cashier_id=cashier_id,
-                risk_level="Medium",
-                triggered_rules=["13_bill_reprint"],
-                timestamp=event_ts or datetime.now(timezone.utc),
-                camera_id=camera_id,
-                snippet_path=clip_path,
-                source="bill_reprint",
-            )
-            deps.storage.append("alerts", alert.model_dump())
-            await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
+            if not is_verify:
+                # Skip clip extraction (writes data/snippets/), alert creation
+                # (writes alerts.jsonl), and ws broadcast for verify traffic.
+                bill_number = (
+                    payload.get("billNumber")
+                    or payload.get("transactionNumber")
+                    or ""
+                )
+                event_ts = (
+                    _parse_ts_or_ms(payload.get("transactionTimestamp"))
+                    or _parse_ts_or_ms(payload.get("transactionTimeStamp"))
+                )
+                clip_path, camera_id = await asyncio.to_thread(
+                    _extract_event_clip,
+                    clip_id=f"bill-reprint-{bill_number or 'unknown'}",
+                    store_id=store_id,
+                    pos_terminal_no=pos_terminal_no,
+                    at=event_ts,
+                )
+                alert = Alert(
+                    transaction_id=bill_number,
+                    store_id=store_id,
+                    store_name=deps.config.get_store_name(store_id),
+                    pos_terminal_no=pos_terminal_no,
+                    display_pos_label=pos_terminal_no,
+                    cashier_id=cashier_id,
+                    risk_level="Medium",
+                    triggered_rules=["13_bill_reprint"],
+                    timestamp=event_ts or datetime.now(timezone.utc),
+                    camera_id=camera_id,
+                    snippet_path=clip_path,
+                    source="bill_reprint",
+                )
+                deps.storage.append("alerts", alert.model_dump())
+                await deps.ws_manager.broadcast("NEW_ALERT", _serialize_alert(alert))
     except ValueError as exc:
         return JSONResponse(
             status_code=400,
             content={"message": f"invalid {expected_event} payload: {exc}"},
         )
 
-    await _broadcast_raw_pos()
+    if not is_verify:
+        await _broadcast_raw_pos()
     return {"status": 200, "message": "Success", "event": expected_event}
 
 
