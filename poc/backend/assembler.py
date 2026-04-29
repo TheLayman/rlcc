@@ -143,6 +143,11 @@ class TransactionAssembler:
                 expired.append(session)
         return expired
 
+    def get_session(self, session_id: str) -> TransactionSession | None:
+        """Public accessor for an open session — keeps callers from poking
+        the private `sessions` dict."""
+        return self.sessions.get(session_id)
+
     def has_open_session(self, store_id: str, pos_terminal_no: str) -> bool:
         normalized = normalize_terminal(pos_terminal_no)
         return any(

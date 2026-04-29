@@ -110,27 +110,6 @@ def _assign_till(branch: str, pos_terminal_no: str) -> str:
     return str(int(hashlib.md5(blob).hexdigest()[:6], 16) % 1_000_000)
 
 
-def _camera_for(store_id: str, pos_terminal_no: str):
-    return deps.config.get_camera_by_terminal(store_id, pos_terminal_no)
-
-
-def _camera_for_payload(store_id: str, payload: dict):
-    """Resolve a camera, trying posTerminalNo then tillDescription.
-
-    Per Nukkad: the POS identifier can land in either field — `posTerminalNo`
-    on transactional events, often `tillDescription` on GetTill / BillReprint
-    (and they may carry different forms — "383" vs "POS 1" — for the same
-    till). Camera matching honours `nukkad_pos_aliases` on each camera entry,
-    so both forms resolve as long as the alias is configured.
-    """
-    for candidate in (payload.get("posTerminalNo"), payload.get("tillDescription")):
-        if candidate:
-            cam = deps.config.get_camera_by_terminal(store_id, candidate)
-            if cam:
-                return cam
-    return None
-
-
 def _hydrate_transaction(txn: TransactionSession) -> TransactionSession:
     txn.store_name = txn.store_name or deps.config.get_store_name(txn.store_id)
     # POC contract: lookup by store, not by (store, POS). One camera per store,
@@ -163,11 +142,7 @@ def _extract_transaction_clip(txn: TransactionSession) -> str:
     )
 
 
-def _extract_event_clip(*, clip_id: str, store_id: str, pos_terminal_no: str, at: datetime | None) -> tuple[str, str]:
-    # POC contract: store-based camera lookup (POS terminal ignored for
-    # camera resolution; per-POS data stays on the transaction itself).
-    # The pos_terminal_no kwarg is kept for signature compatibility but
-    # unused — callers may pass anything.
+def _extract_event_clip(*, clip_id: str, store_id: str, at: datetime | None) -> tuple[str, str]:
     camera = deps.config.get_camera_for_store(store_id)
     if not camera or not deps.video_manager or not at:
         return "", camera.camera_id if camera else ""
@@ -203,7 +178,7 @@ def _canonical_store_id(payload: dict) -> str:
         return branch
     session_id = payload.get("transactionSessionId") or ""
     if session_id:
-        session = deps.assembler.sessions.get(session_id)
+        session = deps.assembler.get_session(session_id)
         if session and session.store_id:
             return session.store_id
     return (payload.get("storeIdentifier") or "").strip()
@@ -380,12 +355,10 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
                     _parse_ts_or_ms(payload.get("transactionTimestamp"))
                     or _parse_ts_or_ms(payload.get("transactionTimeStamp"))
                 )
-                # POC: store-based camera lookup, ignore POS for resolution.
                 clip_path, camera_id = await asyncio.to_thread(
                     _extract_event_clip,
                     clip_id=f"bill-reprint-{bill_number or 'unknown'}",
                     store_id=store_id,
-                    pos_terminal_no=pos_terminal_no,
                     at=event_ts,
                 )
                 alert = Alert(

@@ -101,18 +101,6 @@ class CameraEntry:
         # "POS 1".
         return any(zone.normalized_zone_id == needle for zone in self.pos_zones)
 
-    def zone_for_terminal(self, pos_terminal_no: str) -> "PosZoneConfig | None":
-        """Return the specific PosZoneConfig within this camera that matches a
-        terminal id. Useful for multi-POS cameras to pick the right zone for
-        correlation/clip extraction.
-        """
-        needle = normalize_terminal(pos_terminal_no)
-        if not needle:
-            return None
-        for zone in self.pos_zones:
-            if zone.normalized_zone_id == needle:
-                return zone
-        return None
 
 
 @dataclass
