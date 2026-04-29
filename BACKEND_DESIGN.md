@@ -147,17 +147,24 @@ Links POS transactions with CV signals. Two modes.
 
 ### POS-Anchored (primary)
 
-When a transaction commits, the engine looks up the CV signal window for the matching POS zone during the transaction's time range.
+When a transaction commits, the engine looks up the CV signal window for the camera covering this store during the transaction's time range.
 
-Matching logic: the transaction's SellerWindowId (resolved via `mapping.json` or `GetTill`) maps to a `pos_zone` from CV signals. The POS zone tells us which camera covers it. Timestamp overlap confirms the match.
+**POC contract:** one camera per store, one zone per camera. Camera lookup is store-keyed (`Config.get_camera_for_store(store_id)`); per-POS attribution is intentionally not modeled. The single zone's CV signals serve every POS at the camera. Per-POS data still rides on the transaction (`pos_terminal_no`, `display_pos_label` from Nukkad's payload) — fraud rules group/aggregate by it; correlation just doesn't.
+
+Matching logic: the transaction's `store_id` (CIN, captured from `branch` at Begin) resolves to one camera. That camera has one zone. Timestamp overlap with the zone's CV signal windows confirms the match.
 
 Attached to the transaction:
-- `non_seller_present` (bool) — were non-sellers visible on this camera during the transaction? Camera-wide, not per-POS.
+- `non_seller_present` (bool) — were non-sellers visible on this camera during the transaction? Camera-wide.
 - `non_seller_count` (int) — peak non-seller count during the transaction window. Camera-wide.
-- `receipt_detected` (bool) — did the bill zone for this POS show motion + background change? Per-POS.
-- `cv_confidence` — HIGH for single-POS cameras (non_seller_present is unambiguous), REDUCED for multi-POS cameras (can't attribute non-sellers to a specific POS).
+- `receipt_detected` (bool) — did the camera's bill zone show motion + background change? Camera-wide (one zone covers the camera).
+- `cv_confidence` — HIGH for single-POS cameras, REDUCED for multi-POS cameras flagged with `multi_pos: true`.
 
-**Multi-POS limitation:** On cameras covering multiple POS counters, `non_seller_present: true` can't be attributed to a specific POS — someone is there, but we don't know which counter they're at. However, `non_seller_present: false` is definitive — nobody is at any counter on this camera. This asymmetry matters for rules like "void without customer."
+**Multi-POS-per-camera (e.g. Cafe Niloufer NDCIN1422):** one camera, two POS terminals (POS 1 + POS 2), one shared zone. Set `multi_pos: true` on the camera entry. Per-POS distinctions in CV signals are unavailable by design — both POS share the same `seller_zone`, `customer_zone`, `bill_zone`. Behaviour:
+- `non_seller_present: false` → definitive (nobody anywhere at this camera). Rules 26-28 fire normally.
+- `non_seller_present: true` → ambiguous (someone is there, can't say which POS). Rules 26-28 are gated by `cv_confidence`; the dashboard surfaces the REDUCED tag.
+- `receipt_detected` → unreliable: a bill at POS 1 will mark the shared bill_zone, so a POS 2 transaction won't fire rule 29 even if it didn't bill. Rule 29 should be suppressed (or low-confidence) for `multi_pos: true` cameras until per-POS bill zones are reintroduced.
+
+This is an intentional simplification for the POC. Per-POS CV attribution is post-POC scope.
 
 ### CV-Initiated
 

@@ -333,6 +333,42 @@ def _sale_line_with_till_lookup(sid: str) -> list[Step]:
     ]
 
 
+def _multi_pos_camera(sid: str) -> list[Step]:
+    """Cafe Niloufer (NDCIN1422) has one camera covering POS 1 and POS 2.
+
+    POC contract: camera lookup is store-keyed, so both POS resolve to the
+    same camera but each transaction keeps its own display_pos_label.
+    Sends a full transaction at POS 2 (the side that previously failed
+    lookup before the per-store resolution shipped). POS 1 path is
+    exercised by happy_path with a different store; we just need POS 2 here.
+    """
+    branch = "NDCIN1422"
+    return [
+        Step("GetTill (POS 2)",
+             PATH_FOR["GetTill"],
+             get_till_payload(branch=branch, storeIdentifier=branch,
+                              posTerminalNo="POS 2", tillDescription="POS 2"),
+             200, expect_data_keys=("Till",)),
+        Step("Begin (POS 2)",
+             PATH_FOR["BeginTransactionWithTillLookup"],
+             begin_payload(sid, branch=branch, storeIdentifier=branch,
+                           posTerminalNo="POS 2", tillDescription="POS 2"),
+             200, expect_data_keys=("TransactionSessionId",)),
+        Step("Sale (POS 2)",
+             PATH_FOR["AddTransactionSaleLine"],
+             sale_payload(sid, 1, storeIdentifier=branch, posTerminalNo="POS 2"), 200),
+        Step("Payment (POS 2)",
+             PATH_FOR["AddTransactionPaymentLine"],
+             payment_payload(sid, amount=100.0, storeIdentifier=branch, posTerminalNo="POS 2"), 200),
+        Step("Total (POS 2)",
+             PATH_FOR["AddTransactionTotalLine"],
+             total_payload(sid, amount=100.0, storeIdentifier=branch, posTerminalNo="POS 2"), 200),
+        Step("Commit (POS 2)",
+             PATH_FOR["CommitTransaction"],
+             commit_payload(sid, "VERIFY-BILL-MULTIPOS", storeIdentifier=branch, posTerminalNo="POS 2"), 200),
+    ]
+
+
 def _live_prod_shape(sid: str) -> list[Step]:
     # Mirrors the actual payload shape Nukkad sends in liveprod (per the
     # 2026-04-29 sample): posBillNum on Commit, naive ISO lineTimeStamp,
@@ -509,6 +545,7 @@ def _malformed_json(sid: str) -> list[Step]:
 
 SCENARIOS: list[Scenario] = [
     Scenario("happy_path",        "Happy path — full Nukkad flow",       "GetTill → Begin → 2 sale lines → payment → total → commit (asserts envelope shape on GetTill + Begin)", _happy_path),
+    Scenario("multi_pos_camera",  "Multi-POS camera (Niloufer POS 2)",   "Full flow at NDCIN1422 POS 2 — one camera, two POS, store-keyed resolution", _multi_pos_camera),
     Scenario("live_prod_shape",   "Live-prod payload shape",             "Mirrors what Nukkad actually sends: posBillNum on Commit, naive ISO timestamps, posTerminalNo='383', ManuallyEntered scan", _live_prod_shape),
     Scenario("with_till_lookup",  "AddTransactionSaleLineWithTillLookup","GetTill → Begin → sale-with-till-lookup → commit", _sale_line_with_till_lookup),
     Scenario("split_tender",      "Split tender (cash + UPI)",           "GetTill → Begin → sale → 2 payment lines → total → commit", _split_tender),

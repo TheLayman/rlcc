@@ -133,9 +133,15 @@ def _camera_for_payload(store_id: str, payload: dict):
 
 def _hydrate_transaction(txn: TransactionSession) -> TransactionSession:
     txn.store_name = txn.store_name or deps.config.get_store_name(txn.store_id)
-    camera = _camera_for(txn.store_id, txn.pos_terminal_no)
+    # POC contract: lookup by store, not by (store, POS). One camera per store,
+    # one zone per camera. Multi-POS-per-camera (Cafe Niloufer) carries
+    # multi_pos:true so cv_confidence ends up REDUCED.
+    camera = deps.config.get_camera_for_store(txn.store_id)
     if camera:
-        txn.display_pos_label = camera.display_pos_label
+        # Preserve what Nukkad sent for the POS — camera.display_pos_label is
+        # the camera's "primary" and would mislabel multi-POS transactions.
+        if not txn.display_pos_label:
+            txn.display_pos_label = txn.pos_terminal_no or camera.display_pos_label
         txn.camera_id = txn.camera_id or camera.camera_id
         txn.device_id = txn.device_id or camera.xprotect_device_id
         txn.seller_window_id = txn.seller_window_id or camera.seller_window_key
@@ -158,7 +164,11 @@ def _extract_transaction_clip(txn: TransactionSession) -> str:
 
 
 def _extract_event_clip(*, clip_id: str, store_id: str, pos_terminal_no: str, at: datetime | None) -> tuple[str, str]:
-    camera = _camera_for(store_id, pos_terminal_no)
+    # POC contract: store-based camera lookup (POS terminal ignored for
+    # camera resolution; per-POS data stays on the transaction itself).
+    # The pos_terminal_no kwarg is kept for signature compatibility but
+    # unused — callers may pass anything.
+    camera = deps.config.get_camera_for_store(store_id)
     if not camera or not deps.video_manager or not at:
         return "", camera.camera_id if camera else ""
     return (
@@ -370,14 +380,12 @@ async def _ingest(request: Request, expected_event: str) -> JSONResponse | dict:
                     _parse_ts_or_ms(payload.get("transactionTimestamp"))
                     or _parse_ts_or_ms(payload.get("transactionTimeStamp"))
                 )
-                # BillReprint may carry the POS id in tillDescription instead of
-                # posTerminalNo. Resolve via _camera_for_payload (tries both).
-                reprint_camera = _camera_for_payload(store_id, payload)
+                # POC: store-based camera lookup, ignore POS for resolution.
                 clip_path, camera_id = await asyncio.to_thread(
                     _extract_event_clip,
                     clip_id=f"bill-reprint-{bill_number or 'unknown'}",
                     store_id=store_id,
-                    pos_terminal_no=(reprint_camera.pos_terminal_no if reprint_camera else pos_terminal_no),
+                    pos_terminal_no=pos_terminal_no,
                     at=event_ts,
                 )
                 alert = Alert(

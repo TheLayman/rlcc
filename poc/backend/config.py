@@ -92,7 +92,27 @@ class CameraEntry:
             return False
         if self.normalized_terminal == needle:
             return True
-        return any(normalize_terminal(a) == needle for a in self.nukkad_pos_aliases)
+        if any(normalize_terminal(a) == needle for a in self.nukkad_pos_aliases):
+            return True
+        # Multi-POS cameras (e.g. Cafe Niloufer with POS 1 + POS 2 in the same
+        # frame) carry one zone per till in pos_zones, each keyed by zone_id
+        # that mirrors the till's pos_terminal_no. So a transaction at POS 2
+        # still resolves to this camera even though pos_terminal_no above is
+        # "POS 1".
+        return any(zone.normalized_zone_id == needle for zone in self.pos_zones)
+
+    def zone_for_terminal(self, pos_terminal_no: str) -> "PosZoneConfig | None":
+        """Return the specific PosZoneConfig within this camera that matches a
+        terminal id. Useful for multi-POS cameras to pick the right zone for
+        correlation/clip extraction.
+        """
+        needle = normalize_terminal(pos_terminal_no)
+        if not needle:
+            return None
+        for zone in self.pos_zones:
+            if zone.normalized_zone_id == needle:
+                return zone
+        return None
 
 
 @dataclass
@@ -276,6 +296,20 @@ class Config:
                 return c
         for c in self.cameras:
             if c.enabled and c.store_id == store_id and c.match_any_pos_in_store:
+                return c
+        return None
+
+    def get_camera_for_store(self, store_id: str) -> CameraEntry | None:
+        """Return the first enabled camera for this store.
+
+        POC contract: each store has at most one camera, one zone per camera.
+        Per-POS attribution (which till in a multi-POS camera) is intentionally
+        not modeled — the single zone's CV signals serve every POS at the camera.
+        Use this for store-keyed lookups (clip extraction, CV correlation,
+        seller_window resolution); per-POS data still rides on the transaction.
+        """
+        for c in self.cameras:
+            if c.enabled and c.store_id == store_id:
                 return c
         return None
 

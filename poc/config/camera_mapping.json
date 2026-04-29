@@ -59,7 +59,7 @@
     "camera_id": "cam-cafeniloufer-01",
     "rtsp_url": "rtsp://kspoc:kspoc123@10.86.158.163/rtsp/defaultPrimary?streamType=u",
     "xprotect_device_id": "",
-    "multi_pos": false,
+    "multi_pos": true,
     "enabled": true,
     "match_any_pos_in_store": true,
     "zones": {
