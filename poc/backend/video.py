@@ -32,13 +32,21 @@ class VideoManager:
         start_ts = self._normalize_timestamp(start_ts)
         end_ts = self._normalize_timestamp(end_ts)
         now = datetime.now(timezone.utc)
-        if end_ts <= start_ts or end_ts > now:
+        # Live commits request end_ts = committed_at + 30s padding, which is in
+        # the future. Clamp instead of rejecting — we still get a useful clip
+        # covering everything up to "now"; the post-commit 30s is just lost.
+        if end_ts > now:
+            end_ts = now
+        if end_ts <= start_ts:
+            print(f"[video] skip clip {clip_id}: end_ts <= start_ts ({end_ts} <= {start_ts})")
             return ""
 
         segments = self._segments_for_window(camera_id, start_ts, end_ts)
         if not segments:
+            print(f"[video] skip clip {clip_id}: no buffer segments for {camera_id} in {start_ts}..{end_ts}")
             return ""
         if any(not self._segment_is_ready(segment, now) for segment in segments):
+            print(f"[video] skip clip {clip_id}: some segments not yet stable for {camera_id}")
             return ""
 
         output_path = self.snippet_path(clip_id)

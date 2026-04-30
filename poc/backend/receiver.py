@@ -127,11 +127,16 @@ def _hydrate_transaction(txn: TransactionSession) -> TransactionSession:
 
 
 def _extract_transaction_clip(txn: TransactionSession) -> str:
-    if not deps.video_manager or not txn.camera_id:
+    if not deps.video_manager:
+        print(f"[clip] skip {txn.id}: no video_manager configured")
+        return ""
+    if not txn.camera_id:
+        print(f"[clip] skip {txn.id}: empty camera_id (cv_confidence={txn.cv_confidence}, store={txn.store_id}, pos={txn.pos_terminal_no})")
         return ""
     start_ts = _parse_ts(txn.started_at)
     end_ts = txn.committed_at if isinstance(txn.committed_at, datetime) else _parse_ts(str(txn.committed_at or ""))
     if not start_ts or not end_ts:
+        print(f"[clip] skip {txn.id}: unparseable timestamps (started_at={txn.started_at!r}, committed_at={txn.committed_at!r})")
         return ""
     return deps.video_manager.extract_clip(
         camera_id=txn.camera_id,
