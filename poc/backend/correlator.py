@@ -1,32 +1,35 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from backend.config import Config, normalize_terminal
 from backend.cv_consumer import CVConsumer
 from backend.models import TransactionSession
 from backend.persistence import parse_dt
 
+# CV-window correlation outcomes. Distinct from the alert-escalation levels
+# in backend/confidence.py (LOW/MEDIUM/HIGH/VERY_HIGH).
+CV_CONFIDENCE_HIGH = "HIGH"
+CV_CONFIDENCE_REDUCED = "REDUCED"
+CV_CONFIDENCE_UNMAPPED = "UNMAPPED"
+CV_CONFIDENCE_UNAVAILABLE = "UNAVAILABLE"
+
 
 def correlate(txn: TransactionSession, cv_consumer: CVConsumer, config: Config) -> TransactionSession:
     camera = config.get_camera_by_terminal(txn.store_id, txn.pos_terminal_no)
     if not camera:
-        txn.cv_confidence = "UNMAPPED"
+        txn.cv_confidence = CV_CONFIDENCE_UNMAPPED
         return txn
 
     pos_zone = camera.pos_zones[0].zone_id if camera.pos_zones else normalize_terminal(txn.pos_terminal_no)
 
-    # Use persistence.parse_dt so naive Nukkad timestamps (live-prod sends
-    # them tz-less per BACKEND_DESIGN §11) are normalized IST→UTC.  Without
-    # this the CV window comparison either drifts 5.5 hours OR raises
-    # TypeError comparing naive vs tz-aware datetimes.
-    start = parse_dt(txn.started_at) if txn.started_at else None
-    end = txn.committed_at if isinstance(txn.committed_at, datetime) else parse_dt(txn.committed_at)
-    if end is not None and end.tzinfo is None:
-        end = end.replace(tzinfo=timezone.utc)
+    # parse_dt normalizes naive Nukkad timestamps IST→UTC per BACKEND_DESIGN §11,
+    # so window comparison doesn't drift or raise on naive vs tz-aware datetimes.
+    start = parse_dt(txn.started_at)
+    end = parse_dt(txn.committed_at)
 
     if not start or not end:
-        txn.cv_confidence = "UNAVAILABLE"
+        txn.cv_confidence = CV_CONFIDENCE_UNAVAILABLE
         return txn
 
     start_padded = start - timedelta(seconds=3)
@@ -34,14 +37,14 @@ def correlate(txn: TransactionSession, cv_consumer: CVConsumer, config: Config) 
     windows = cv_consumer.get_windows(camera.camera_id, pos_zone, start_padded, end_padded)
 
     if not windows:
-        txn.cv_confidence = "UNAVAILABLE"
+        txn.cv_confidence = CV_CONFIDENCE_UNAVAILABLE
         txn.camera_id = camera.camera_id
         txn.device_id = camera.xprotect_device_id
         return txn
 
     total_frames = sum(window.frame_count for window in windows)
     if total_frames == 0:
-        txn.cv_confidence = "UNAVAILABLE"
+        txn.cv_confidence = CV_CONFIDENCE_UNAVAILABLE
         return txn
 
     non_seller_pct = sum(window.non_seller_present_pct * window.frame_count for window in windows) / total_frames
@@ -60,7 +63,7 @@ def correlate(txn: TransactionSession, cv_consumer: CVConsumer, config: Config) 
     txn.cv_screen_motion = screen_motion
     txn.cv_screen_bg = screen_bg
     txn.cv_screen_hand_present = screen_hand
-    txn.cv_confidence = "REDUCED" if camera.multi_pos else "HIGH"
+    txn.cv_confidence = CV_CONFIDENCE_REDUCED if camera.multi_pos else CV_CONFIDENCE_HIGH
     txn.camera_id = camera.camera_id
     txn.device_id = camera.xprotect_device_id
     txn.display_pos_label = camera.display_pos_label

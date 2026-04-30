@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from backend.config import Config, normalize_terminal
+from backend.correlator import CV_CONFIDENCE_HIGH
 from backend.models import Alert, TransactionSession
 
 
@@ -269,7 +270,7 @@ class FraudEngine:
             return
         if txn.cv_bill_hand_present is True:
             return
-        if txn.cv_confidence != "HIGH":
+        if txn.cv_confidence != CV_CONFIDENCE_HIGH:
             return
         if not self._has_bill_zone_coverage(txn):
             return
