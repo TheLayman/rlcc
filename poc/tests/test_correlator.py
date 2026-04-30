@@ -34,6 +34,7 @@ def _make_config_with_camera(seller_window_id, camera_id, pos_zone, multi_pos=Fa
             pos_zones=[PosZoneConfig(zone_id=pos_zone, seller_zone=[], bill_zone=[])],
         )
     ]
+    config.rules = {}  # populated by callers that want a non-default cv_non_seller_present_threshold
     return config
 
 
@@ -56,6 +57,7 @@ def test_correlate_no_camera():
     cv, now = _make_cv_consumer_with_window("POS3", "cam-01")
     config = Config.__new__(Config)
     config.cameras = []
+    config.rules = {}
     txn = TransactionSession(id="TXN-002", store_id="UNKNOWN", pos_terminal_no="POS 1", source="push_assembled")
     result = correlate(txn, cv, config)
     assert result.cv_confidence == "UNMAPPED"

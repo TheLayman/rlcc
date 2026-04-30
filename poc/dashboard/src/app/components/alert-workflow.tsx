@@ -60,6 +60,7 @@ export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransacti
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
   const [remarks, setRemarks] = useState('');
   const [newStatus, setNewStatus] = useState('');
+  const [manualBill, setManualBill] = useState(false);
 
   const ruleTypeOptions = useMemo(() => {
     const seen = new Map<string, number>();
@@ -93,7 +94,7 @@ export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransacti
     return { total: alerts.length, open, investigating, closed };
   }, [alerts]);
 
-  const handleResolve = async (alertId: string, status: string, remarksText: string) => {
+  const handleResolve = async (alertId: string, status: string, remarksText: string, isManualBill: boolean) => {
     if (!status) {
       toast.error('Please select a resolution status');
       return;
@@ -104,7 +105,7 @@ export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransacti
     }
 
     setAlerts(prev => prev.map(alert => (
-      alert.id === alertId ? { ...alert, status, remarks: remarksText } : alert
+      alert.id === alertId ? { ...alert, status, remarks: remarksText, manual_bill: isManualBill || alert.manual_bill } : alert
     )));
 
     const alert = alerts.find(item => item.id === alertId);
@@ -113,17 +114,19 @@ export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransacti
         `${BACKEND_BASE}/api/admin/validate?transaction_id=${alert.transaction_id}&decision=${encodeURIComponent(status)}&notes=${encodeURIComponent(remarksText)}`,
         { method: 'POST' },
       ).catch(() => {});
-    } else {
-      fetch(
-        `${BACKEND_BASE}/api/alerts/${alertId}/resolve?status=${encodeURIComponent(status)}&remarks=${encodeURIComponent(remarksText)}`,
-        { method: 'POST' },
-      ).catch(() => {});
     }
+    // Always also POST to /api/alerts/{id}/resolve so the manual_bill flag
+    // gets persisted on the alert (admin/validate above doesn't carry it).
+    fetch(
+      `${BACKEND_BASE}/api/alerts/${alertId}/resolve?status=${encodeURIComponent(status)}&remarks=${encodeURIComponent(remarksText)}&manual_bill=${isManualBill ? 'true' : 'false'}`,
+      { method: 'POST' },
+    ).catch(() => {});
 
     toast.success(`Alert ${alertId} updated`);
     setSelectedAlertId(null);
     setRemarks('');
     setNewStatus('');
+    setManualBill(false);
   };
 
   const getStatusIcon = (status: string) => {
@@ -305,10 +308,19 @@ export function AlertWorkflow({ alerts, setAlerts, transactions, onOpenTransacti
                           className="bg-gray-50 border-gray-200 min-h-[80px]"
                         />
                       </div>
+                      <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={manualBill}
+                          onChange={event => setManualBill(event.target.checked)}
+                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span>This was a manual paper bill (not through EPOS) — hide from "EPOS not touched" filter</span>
+                      </label>
                       <div className="flex gap-2">
                         <Button
                           className="bg-blue-600 hover:bg-blue-700 text-white"
-                          onClick={() => handleResolve(alert.id, newStatus, remarks)}
+                          onClick={() => handleResolve(alert.id, newStatus, remarks, manualBill)}
                         >
                           Submit Resolution
                         </Button>

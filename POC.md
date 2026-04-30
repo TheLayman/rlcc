@@ -1,4 +1,4 @@
-# POC — 9 Stores on T4 Workstation
+# POC — 10 Stores on T4 Workstation
 
 ## Hardware
 
@@ -6,7 +6,7 @@ Single machine. Tesla T4 (16 GB VRAM), 32 GB RAM. Runs everything: CV inference,
 
 ## Scope
 
-9 stores, 1 camera per store (POS-facing), 8 RTSP streams (Nizami Daawat awaits camera install). 5 stores on the Dino POS, 4 on Retail POS — all push to our 9 RLCC endpoints. RTSP URLs configured directly on the server; zone polygons drawn via the dashboard zone tool.
+10 stores, 1 camera per store (POS-facing), 9 RTSP streams (Nizami Daawat awaits camera install). 5 stores on the Dino POS, 5 on Retail POS — all push to our 9 RLCC endpoints. RTSP URLs configured directly on the server; zone polygons drawn via the dashboard zone tool.
 
 ## Architecture
 
@@ -333,22 +333,23 @@ Check: `curl http://localhost:8001/api/transactions | python3 -m json.tool`
 
 Backend, dashboard, and fraud engine code is production code from day one. CV inference stack, transport layer, and video source change.
 
-## 9 POC stores
+## 10 POC stores
 
-5 Dino-POS + 4 Retail-POS, all pushing to our 9 RLCC endpoints. RTSP URLs from WAISL (24-Apr-2026 confirmation).
+5 Dino-POS + 5 Retail-POS, all pushing to our 9 RLCC endpoints. RTSP URLs from WAISL (24-Apr-2026 confirmation).
 
 | # | CIN | Store | POS | Location | Category | RTSP |
 |---|-----|-------|-----|----------|----------|------|
-| 1 | NDCIN1231 | Nizami Daawat       | Dino   | Aero Plaza      | F&B – QSR                       | **Pending** — push-only until camera install |
-| 2 | NDCIN1422 | Cafe Niloufer       | Dino   | Airport Village | F&B – QSR & Dine In             | 10.86.158.163 |
-| 3 | NDCIN2082 | Krispy Kreme        | Dino   | Aero Plaza      | F&B – Bakery                    | 10.86.158.196 |
-| 4 | NDCIN2123 | Visitor Gallery     | Dino   | Fore Court      | Services – Airport Entry Ticket | 10.86.158.168 |
-| 5 | NDCIN2071 | Frank Hot Dog       | Dino   | Airport Village | F&B – QSR                       | 10.86.158.230 |
-| 6 | NSCIN10323| Pulla Reddy Sweets  | Retail | Retail Village  | Retail – Packaged Food          | 10.86.158.71 |
-| 7 | NSCIN8244 | Enwrap              | Retail | Fore Court      | Services – Baggage Wrapping     | 10.86.158.140 |
-| 8 | NSCIN8260 | Karachi Bakery      | Retail | Airport Village | Retail – Bakery & Packed Food   | 10.86.158.172 |
-| 9 | NSCIN10697| Relaxo              | Retail | Arrivals        | Services – Massage Chair        | 10.86.158.179 |
+|  1 | NDCIN1231 | Nizami Daawat       | Dino   | Aero Plaza      | F&B – QSR                       | **Pending** — push-only until camera install |
+|  2 | NDCIN1422 | Cafe Niloufer       | Dino   | Airport Village | F&B – QSR & Dine In             | 10.86.158.163 |
+|  3 | NDCIN2082 | Krispy Kreme        | Dino   | Aero Plaza      | F&B – Bakery                    | 10.86.158.196 |
+|  4 | NDCIN2123 | Visitor Gallery     | Dino   | Fore Court      | Services – Airport Entry Ticket | 10.86.158.168 |
+|  5 | NDCIN2071 | Frank Hot Dog       | Dino   | Airport Village | F&B – QSR                       | 10.86.158.230 |
+|  6 | NSCIN10323| Pulla Reddy Sweets  | Retail | Retail Village  | Retail – Packaged Food          | 10.86.158.71 |
+|  7 | NSCIN8244 | Enwrap              | Retail | Fore Court      | Services – Baggage Wrapping     | 10.86.158.140 |
+|  8 | NSCIN8260 | Karachi Bakery      | Retail | Airport Village | Retail – Bakery & Packed Food   | 10.86.158.172 |
+|  9 | NSCIN10697| Relaxo              | Retail | Arrivals        | Services – Massage Chair        | 10.86.158.179 |
+| 10 | NSCIN10489| Killer Jeans        | Retail | Retail Village  | Retail – Apparels               | 10.86.157.88 |
 
-Killer Jeans (NSCIN10489) was on WAISL's RTSP list but excluded from scope. The previous POC seed (Ram Ki Bandi, KFC, Haldiram's-AeroPlaza) is dropped.
+The previous POC seed (Ram Ki Bandi, KFC, Haldiram's-AeroPlaza) is dropped.
 
-For the four new entries (rows 6-9), the camera mappings carry the RTSP URL but no zone polygons yet — draw them via the dashboard's Store Config view before the fraud engine can do CV correlation for those stores.
+For the new Retail entries (rows 6-10), the camera mappings carry the RTSP URL but no zone polygons yet — draw them via the dashboard's Store Config view before the fraud engine can do CV correlation for those stores.

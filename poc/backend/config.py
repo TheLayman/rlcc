@@ -70,6 +70,11 @@ class CameraEntry:
     pos_zones: list[PosZoneConfig]
     enabled: bool = True
     match_any_pos_in_store: bool = False
+    # Alternate POS labels Nukkad's POS sends for this same physical till.
+    # Live-prod sometimes sends a numeric terminal id (e.g. "383") on
+    # Sale/Payment/Total/Commit and the human label "POS 1" on GetTill.
+    # List every value Nukkad might use here so all lookups resolve.
+    nukkad_pos_aliases: list[str] = field(default_factory=list)
 
     @property
     def normalized_terminal(self) -> str:
@@ -80,7 +85,22 @@ class CameraEntry:
         return self.seller_window_id or build_seller_window_id(self.store_id, self.pos_terminal_no)
 
     def matches_terminal(self, store_id: str, pos_terminal_no: str) -> bool:
-        return self.store_id == store_id and self.normalized_terminal == normalize_terminal(pos_terminal_no)
+        if self.store_id != store_id:
+            return False
+        needle = normalize_terminal(pos_terminal_no)
+        if not needle:
+            return False
+        if self.normalized_terminal == needle:
+            return True
+        if any(normalize_terminal(a) == needle for a in self.nukkad_pos_aliases):
+            return True
+        # Multi-POS cameras (e.g. Cafe Niloufer with POS 1 + POS 2 in the same
+        # frame) carry one zone per till in pos_zones, each keyed by zone_id
+        # that mirrors the till's pos_terminal_no. So a transaction at POS 2
+        # still resolves to this camera even though pos_terminal_no above is
+        # "POS 1".
+        return any(zone.normalized_zone_id == needle for zone in self.pos_zones)
+
 
 
 @dataclass
@@ -158,6 +178,9 @@ class Config:
                 for z in c.get("zones", {}).get("pos_zones", [])
             ]
 
+            raw_aliases = c.get("nukkad_pos_aliases") or []
+            aliases = [str(a).strip() for a in raw_aliases if str(a).strip()]
+
             loaded.append(
                 CameraEntry(
                     seller_window_id=seller_window_id,
@@ -171,6 +194,7 @@ class Config:
                     pos_zones=zones,
                     enabled=bool(c.get("enabled", True)),
                     match_any_pos_in_store=bool(c.get("match_any_pos_in_store", False)),
+                    nukkad_pos_aliases=aliases,
                 )
             )
 
@@ -260,6 +284,20 @@ class Config:
                 return c
         for c in self.cameras:
             if c.enabled and c.store_id == store_id and c.match_any_pos_in_store:
+                return c
+        return None
+
+    def get_camera_for_store(self, store_id: str) -> CameraEntry | None:
+        """Return the first enabled camera for this store.
+
+        POC contract: each store has at most one camera, one zone per camera.
+        Per-POS attribution (which till in a multi-POS camera) is intentionally
+        not modeled — the single zone's CV signals serve every POS at the camera.
+        Use this for store-keyed lookups (clip extraction, CV correlation,
+        seller_window resolution); per-POS data still rides on the transaction.
+        """
+        for c in self.cameras:
+            if c.enabled and c.store_id == store_id:
                 return c
         return None
 

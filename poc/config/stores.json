@@ -7,5 +7,7 @@
   {"cin": "NSCIN10323", "name": "Pulla Reddy Sweets", "pos_system": "Posifly-Retail", "operator": ""},
   {"cin": "NSCIN8244", "name": "Enwrap", "pos_system": "Posifly-Retail", "operator": ""},
   {"cin": "NSCIN8260", "name": "Karachi Bakery", "pos_system": "Posifly-Retail", "operator": ""},
-  {"cin": "NSCIN10697", "name": "Relaxo", "pos_system": "Posifly-Retail", "operator": ""}
+  {"cin": "NSCIN10697", "name": "Relaxo", "pos_system": "Posifly-Retail", "operator": ""},
+  {"cin": "NSCIN10489", "name": "Killer Jeans", "pos_system": "Posifly-Retail", "operator": ""},
+  {"cin": "NSCIN0000", "name": "Test Store", "pos_system": "Posifly-Retail", "operator": ""}
 ]

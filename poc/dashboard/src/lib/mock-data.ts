@@ -107,4 +107,5 @@ export interface Alert {
   cv_confidence?: CVConfidence | '';
   remarks?: string;
   source?: string;
+  manual_bill?: boolean;
 }

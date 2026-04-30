@@ -174,6 +174,10 @@ class Alert(BaseModel):
     snippet_path: str = ""
     source: str = "rule"
     cv_confidence: str = ""
+    # BRD 13.h — RLCC operator can mark a transaction as "this was a manual
+    # paper bill, not through EPOS." Used to dismiss bill-not-generated
+    # alerts that are actually legitimate manual-bill workflows.
+    manual_bill: bool = False
 
     @property
     def pos_zone(self) -> str:
